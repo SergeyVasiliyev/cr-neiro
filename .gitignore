@@ -1,0 +1,15 @@
+build/
+.vs/
+out/
+__pycache__/
+*.pyc
+.venv/
+python/*.pyd
+raw/
+runs/
+.pytest_cache/
+.vscode/
+*.pdb
+*.obj
+*.ilk
+*.exe
