@@ -6,12 +6,15 @@ Frames come from tools/extract_label_frames.py (raw/labels/frames/); labels are 
 change to raw/labels/labels.json.
 
 Controls
-  1..8            choose the class (shown on the right)
+  1..9, 0         choose the class (shown on the right)
   left click      a unit of OURS (blue, bottom) at the cursor
   right click     an ENEMY unit (red, top)
                   ground troops: click their feet; flying troops and spells: click their middle
   drag (L or R)   draw the box yourself instead of the default size
   D / Delete      remove the label under the cursor        Z  undo the last label
+  T               swap blue/red of the label under the cursor
+  R               set the label under the cursor to the chosen class
+  C               remove all detector suggestions (dashed boxes) from this frame
   Space / Enter / ->   next frame (also marks this one done)    <-  previous frame
   X               skip this frame (bad / unclear), go to the next one
 """
@@ -37,7 +40,11 @@ CLASSES = [
     ("musketeer", "мушкетёр", (52, 72), "feet"),
     ("fireball", "огненный шар", (56, 56), "centre"),
     ("arrows", "стрелы (залп)", (150, 150), "centre"),
+    # Where a spell lands (explosion / arrow rain): radius 2.5 / 3.5 tiles, a tile is 51 x 41.6 px.
+    ("fireball_hit", "взрыв шара", (255, 208), "centre"),
+    ("arrows_hit", "стрелы попали", (357, 291), "centre"),
 ]
+CLASS_KEYS = "1234567890"  # key that selects each class, in CLASSES order
 TEAM_COLOR = {"blue": (70, 150, 255), "red": (255, 70, 70)}
 BG = (25, 27, 33)
 TEXT = (230, 230, 235)
@@ -77,7 +84,7 @@ class Tool:
         self.big = pygame.font.SysFont("consolas", 20, bold=True)
         self.cls = 0
         self.drag = None  # (button, start screen pos)
-        done = {k for k, v in self.doc["frames"].items() if v.get("status")}
+        done = {k for k, v in self.doc["frames"].items() if v.get("status") in ("labeled", "skip")}
         self.index = next((i for i, f in enumerate(self.files) if f not in done), 0)
         self.load_frame()
 
@@ -90,9 +97,13 @@ class Tool:
         self.entry = self.doc["frames"].setdefault(name, {"status": None, "objects": []})
 
     def go(self, delta, mark_done=True):
-        if mark_done and self.entry["status"] is None:
+        if mark_done and self.entry["status"] in (None, "prelabeled"):
             self.entry["status"] = "labeled"
-            save_labels(self.doc)
+        if mark_done:
+            for o in self.entry["objects"]:  # moving on = the suggestions were reviewed
+                o.pop("auto", None)
+                o.pop("conf", None)
+        save_labels(self.doc)
         self.index = max(0, min(len(self.files) - 1, self.index + delta))
         self.load_frame()
 
@@ -120,22 +131,40 @@ class Tool:
         self.entry["status"] = "labeled"
         save_labels(self.doc)
 
-    def remove_at(self, sx, sy):
+    def under_cursor(self, sx, sy):
+        """Index of the smallest box under the cursor, or None."""
         fx, fy = self.to_frame(sx, sy)
         objs = self.entry["objects"]
         hits = [i for i, o in enumerate(objs) if o["box"][0] <= fx <= o["box"][2] and o["box"][1] <= fy <= o["box"][3]]
-        if hits:
-            # the smallest box under the cursor
-            i = min(hits, key=lambda i: (objs[i]["box"][2] - objs[i]["box"][0]) * (objs[i]["box"][3] - objs[i]["box"][1]))
-            objs.pop(i)
+        if not hits:
+            return None
+        return min(hits, key=lambda i: (objs[i]["box"][2] - objs[i]["box"][0]) * (objs[i]["box"][3] - objs[i]["box"][1]))
+
+    def remove_at(self, sx, sy):
+        i = self.under_cursor(sx, sy)
+        if i is not None:
+            self.entry["objects"].pop(i)
             save_labels(self.doc)
+
+    def edit_at(self, sx, sy, team=None, cls=None):
+        i = self.under_cursor(sx, sy)
+        if i is None:
+            return
+        o = self.entry["objects"][i]
+        if team:
+            o["team"] = "red" if o["team"] == "blue" else "blue"
+        if cls:
+            o["cls"] = cls
+        o.pop("auto", None)
+        o.pop("conf", None)
+        save_labels(self.doc)
 
     # --- loop ---------------------------------------------------------------------------
     def handle(self, ev):
         if ev.type == pygame.KEYDOWN:
             k = ev.key
-            if pygame.K_1 <= k <= pygame.K_8:
-                self.cls = k - pygame.K_1
+            if ev.unicode and ev.unicode in CLASS_KEYS[:len(CLASSES)]:
+                self.cls = CLASS_KEYS.index(ev.unicode)
             elif k in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_RIGHT):
                 self.go(+1)
             elif k == pygame.K_LEFT:
@@ -149,6 +178,13 @@ class Tool:
                 save_labels(self.doc)
             elif k in (pygame.K_d, pygame.K_DELETE, pygame.K_BACKSPACE):
                 self.remove_at(*pygame.mouse.get_pos())
+            elif k == pygame.K_t:
+                self.edit_at(*pygame.mouse.get_pos(), team=True)
+            elif k == pygame.K_r:
+                self.edit_at(*pygame.mouse.get_pos(), cls=CLASSES[self.cls][0])
+            elif k == pygame.K_c:
+                self.entry["objects"] = [o for o in self.entry["objects"] if not o.get("auto")]
+                save_labels(self.doc)
         elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 3) and ev.pos[0] < self.view_w:
             self.drag = (ev.button, ev.pos)
         elif ev.type == pygame.MOUSEBUTTONUP and self.drag and ev.button == self.drag[0]:
@@ -168,9 +204,18 @@ class Tool:
             x0, y0 = self.to_screen(o["box"][0], o["box"][1])
             x1, y1 = self.to_screen(o["box"][2], o["box"][3])
             color = TEAM_COLOR[o["team"]]
-            pygame.draw.rect(self.screen, color, pygame.Rect(x0, y0, x1 - x0, y1 - y0), 2)
             ci = [c[0] for c in CLASSES].index(o["cls"]) if o["cls"] in [c[0] for c in CLASSES] else -1
-            self.screen.blit(self.small.render(str(ci + 1), True, color), (x0 + 2, y0 + 1))
+            if o.get("auto"):  # detector suggestion not reviewed yet: dashed, with its confidence
+                for a, b in (((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))):
+                    n = max(1, int(max(abs(b[0] - a[0]), abs(b[1] - a[1])) // 6))
+                    for j in range(0, n, 2):
+                        p0 = (a[0] + (b[0] - a[0]) * j / n, a[1] + (b[1] - a[1]) * j / n)
+                        p1 = (a[0] + (b[0] - a[0]) * (j + 1) / n, a[1] + (b[1] - a[1]) * (j + 1) / n)
+                        pygame.draw.line(self.screen, color, p0, p1, 2)
+                self.screen.blit(self.small.render(f"{CLASS_KEYS[ci] if ci >= 0 else '?'} {o.get('conf', 0):.2f}", True, color), (x0 + 2, y0 + 1))
+            else:
+                pygame.draw.rect(self.screen, color, pygame.Rect(x0, y0, x1 - x0, y1 - y0), 2)
+                self.screen.blit(self.small.render(CLASS_KEYS[ci] if ci >= 0 else "?", True, color), (x0 + 2, y0 + 1))
         mx, my = pygame.mouse.get_pos()
         if self.drag and self.drag[1][0] < self.view_w:
             sx, sy = self.drag[1]
@@ -183,26 +228,29 @@ class Tool:
 
         x = self.view_w + 14
         y = 12
-        done = sum(1 for v in self.doc["frames"].values() if v.get("status"))
+        done = sum(1 for v in self.doc["frames"].values() if v.get("status") in ("labeled", "skip"))
         self.screen.blit(self.big.render(f"кадр {self.index + 1}/{len(self.files)}", True, TEXT), (x, y))
         y += 26
         self.screen.blit(self.font.render(f"размечено: {done}", True, DIM), (x, y))
         y += 22
-        status = self.entry["status"] or "новый"
+        status = {"labeled": "готов", "skip": "пропущен", "prelabeled": "подсказки детектора"}.get(self.entry["status"], "новый")
         self.screen.blit(self.small.render(f"{self.files[self.index]}  [{status}]", True, DIM), (x, y))
         y += 30
         for i, (_, ru, _, anchor) in enumerate(CLASSES):
             color = (255, 230, 120) if i == self.cls else TEXT
             mark = "> " if i == self.cls else "  "
             where = "ноги" if anchor == "feet" else "центр"
-            self.screen.blit(self.font.render(f"{mark}{i + 1} {ru} ({where})", True, color), (x, y))
+            self.screen.blit(self.font.render(f"{mark}{CLASS_KEYS[i]} {ru} ({where})", True, color), (x, y))
             y += 22
         y += 14
         for line in ["ЛКМ — наш (синий)", "ПКМ — чужой (красный)", "тяни — своя рамка",
-                     "D — удалить под курсором", "Z — отменить", "Пробел/→ — дальше",
+                     "D — удалить под курсором", "Z — отменить", "T — сменить сторону", "R — сменить класс",
+                     "C — убрать все подсказки", "Пробел/→ — дальше",
                      "← — назад", "X — пропустить кадр"]:
             self.screen.blit(self.small.render(line, True, DIM), (x, y))
             y += 18
+        self.screen.blit(self.small.render("пунктир = подсказка детектора", True, DIM), (x, y))
+        y += 18
         y += 10
         counts = {}
         for o in self.entry["objects"]:

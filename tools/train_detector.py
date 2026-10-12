@@ -20,6 +20,7 @@ def main():
     p.add_argument("--imgsz", type=int, default=960)
     p.add_argument("--batch", type=int, default=8)
     p.add_argument("--name", default="units")
+    p.add_argument("--patience", type=int, default=60, help="stop after this many epochs without improvement")
     args = p.parse_args()
 
     from ultralytics import YOLO
@@ -31,7 +32,8 @@ def main():
     model.train(
         data=args.data, epochs=args.epochs, imgsz=args.imgsz, batch=args.batch, device=0, workers=2,
         project=os.path.join(ROOT, "raw", "detector", "runs"), name=args.name, exist_ok=True,
-        fliplr=0.5, flipud=0.0, degrees=0.0, mosaic=1.0, close_mosaic=20, patience=60, plots=True, verbose=False,
+        fliplr=0.5, flipud=0.0, degrees=0.0, mosaic=1.0, close_mosaic=20, patience=args.patience, plots=True,
+        verbose=False,
     )
 
 
