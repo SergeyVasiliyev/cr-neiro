@@ -18,8 +18,7 @@ scripts\train.bat --run first --opponent heuristic  :: обучить модел
 
 ```bat
 py -3.12 -m venv .venv
-.venv\Scripts\python.exe -m pip install pybind11 pygame numpy gymnasium tensorboard pytest
-.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 scripts\build.bat
 ```
 
