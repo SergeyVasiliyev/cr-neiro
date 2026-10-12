@@ -1,4 +1,9 @@
 {
   "_comment": "Hand-made corrections applied on top of the imported cards.json / towers.json when loading (JSON merge patch). Re-running the importer does not touch this file. Every entry says why. Example: \"cards\": {\"fireball\": {\"_why\": \"...\", \"spell\": {\"projectile_speed\": 15.0}}}",
-  "cards": {}
+  "cards": {},
+  "towers": {
+    "_why": "Tower HP at level 11 as shown in a real friendly battle (raw/videos/video1.mp4: full towers show 3052 and 4824). Towers do not scale with the card rarity multipliers the importer uses (that gives 3584 / 6144); their table is not in csv_logic. Damage (128 from the importer) is still to verify.",
+    "princess": { "hitpoints": 3052 },
+    "king": { "hitpoints": 4824 }
+  }
 }
