@@ -106,7 +106,8 @@ struct CardPlay {
 struct PlayerState {
     double elixir = 0.0;
     double elixir_leaked = 0.0;  // total elixir lost while sitting at max
-    std::array<std::string, kHandSize> hand;
+    std::array<std::string, kHandSize> hand;  // "" = empty slot waiting for the next card
+    std::array<int, kHandSize> refill_ms_left{};  // > 0 while that slot is empty
     std::deque<std::string> queue;  // front = next card to enter the hand
     std::vector<CardPlay> plays;    // every card played, oldest first (public once revealed)
     int crowns = 0;
@@ -140,6 +141,7 @@ public:
     const std::vector<Projectile>& projectiles() const { return projectiles_; }
     const std::vector<PendingDeploy>& pending() const { return pending_; }
     int deploy_delay_ms() const;  // blueprint delay for a card played now
+    int card_refill_ms() const;   // how long the slot of a card played now stays empty
     const Entity* find(EntityId id) const;
     // Tower entity ids; find() returns nullptr once the tower is destroyed.
     EntityId king_tower(Team team) const { return towers_[idx(team)].king; }
@@ -163,6 +165,7 @@ private:
     void cast_spell(Team team, const CardDef& card, Vec2 pos);
 
     void regen_elixir(int dt);
+    void refill_hands(int dt);
     void update_troop(Entity& e, int dt);
     void update_tower(Entity& e, int dt);
     void update_projectiles(int dt);

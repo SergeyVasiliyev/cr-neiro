@@ -116,6 +116,10 @@ GameData GameData::load(const std::filesystem::path& dir) {
     d.rules.deploy_delay_ms[0] = delay.at("x1").get<int>();
     d.rules.deploy_delay_ms[1] = delay.at("x2").get<int>();
     d.rules.deploy_delay_ms[2] = delay.at("x3").get<int>();
+    const json& refill = rules.at("card_refill_ms");
+    d.rules.card_refill_ms[0] = refill.at("x1").get<int>();
+    d.rules.card_refill_ms[1] = refill.at("x2").get<int>();
+    d.rules.card_refill_ms[2] = refill.at("x3").get<int>();
     d.rules.start_elixir = rules.at("start_elixir").get<double>();
     d.rules.max_elixir = rules.at("max_elixir").get<double>();
 

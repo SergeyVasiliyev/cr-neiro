@@ -205,6 +205,7 @@ PYBIND11_MODULE(crsim, m) {
         .def_readonly("elixir_leaked", &PlayerState::elixir_leaked)
         .def_readonly("plays", &PlayerState::plays)
         .def_readonly("hand", &PlayerState::hand)
+        .def_readonly("refill_ms_left", &PlayerState::refill_ms_left)
         .def_property_readonly("queue", [](const PlayerState& p) {
             return std::vector<std::string>(p.queue.begin(), p.queue.end());
         })
@@ -230,6 +231,7 @@ PYBIND11_MODULE(crsim, m) {
         .def_property_readonly("projectiles", &Battle::projectiles)
         .def_property_readonly("pending", &Battle::pending)
         .def_property_readonly("deploy_delay_ms", &Battle::deploy_delay_ms)
+        .def_property_readonly("card_refill_ms", &Battle::card_refill_ms)
         .def_property_readonly("events", &Battle::events)
         .def("clear_events", &Battle::clear_events)
         .def("set_record_events", &Battle::set_record_events)
