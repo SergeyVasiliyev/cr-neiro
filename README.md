@@ -132,12 +132,12 @@ C:\LDPlayer\LDPlayer9\adb.exe pull <папка из вывода>/split_install_
 - Детектор юнитов — YOLO, обучается на разметке.
 
 ```bat
-.venv\Scripts\python.exe toolsuild_perception_templates.py      :: образцы карт и цифр из записей
+.venv\Scripts\python.exe tools\build_perception_templates.py      :: образцы карт и цифр из записей
 .venv\Scripts\python.exe tools\perception_overlay.py --start 20   :: видео с тем, что прочитано
 .venv\Scripts\python.exe tools\extract_label_frames.py            :: кадры для разметки юнитов
 scripts\label.bat                                                  :: разметка юнитов кликами
-.venv\Scripts\python.exe toolsuild_detector_dataset.py          :: датасет YOLO
-.venv\Scripts\python.exe tools	rain_detector.py                  :: обучение детектора
+.venv\Scripts\python.exe tools\build_detector_dataset.py          :: датасет YOLO
+.venv\Scripts\python.exe tools\train_detector.py                  :: обучение детектора
 .venv\Scripts\python.exe tools\show_detections.py                 :: картинка с найденными юнитами
 ```
 
