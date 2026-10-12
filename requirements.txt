@@ -4,6 +4,7 @@
 #   scripts\build.bat
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch==2.11.0+cu128
+torchvision==0.26.0+cu128
 numpy==2.5.4
 pybind11==3.1.0
 pygame==2.6.1
@@ -11,3 +12,4 @@ gymnasium==1.4.0
 tensorboard==2.21.0
 pytest==9.1.1
 opencv-python==5.0.0.93
+ultralytics==8.4.175

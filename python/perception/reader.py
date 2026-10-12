@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from .layout import Layout
+from .numbers import NumberReader
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_TEMPLATES = os.path.join(ROOT, "raw", "perception", "templates.npz")
@@ -50,6 +51,7 @@ class ScreenReader:
         self.next_names = [str(n) for n in t["next_names"]]
         self.next_templates = t["next_templates"]
         self.color_threshold = float(t["color_threshold"])
+        self.numbers = NumberReader(t["digit_templates"], t["digit_labels"]) if "digit_templates" in t else None
 
     # --- hand ---------------------------------------------------------------------------
     def classify_hand_crop(self, crop):
@@ -121,10 +123,33 @@ class ScreenReader:
             full = max(full, seg_full)
         return full + (min(partial, 0.99) if full < 10 else 0.0)
 
+    # --- numbers ------------------------------------------------------------------------
+    TOWERS = ("red_king", "red_left", "red_right", "blue_king", "blue_left", "blue_right")
+
+    # Level-11 tower HP (data/overrides.json); used to check numbers against the HP bars.
+    MAX_HP = {"king": 4824, "princess": 3052}
+
+    def read_towers(self, frame, layout=None):
+        """{tower: (hp, exact)}: the HP number when it agrees with the bar, otherwise an estimate from
+        the bar (exact False); (None, False) where no bar is shown (destroyed tower, or a king tower
+        that has not been hit yet and shows only its level badge)."""
+        layout = layout or Layout.for_frame(frame)
+        out = {}
+        for name in self.TOWERS:
+            max_hp = self.MAX_HP["king" if name.endswith("king") else "princess"]
+            out[name] = self.numbers.read_tower_hp(frame, name, max_hp, layout.scale)
+        return out
+
     def read(self, frame):
         layout = Layout.for_frame(frame)
-        return {
+        out = {
             "hand": self.read_hand(frame, layout),
             "next": self.read_next(frame, layout),
             "elixir": self.read_elixir(frame, layout),
         }
+        if self.numbers:
+            seconds, overtime = self.numbers.read_timer(frame, layout.scale)
+            out["timer"] = {"seconds": seconds, "overtime": overtime}
+            out["elixir_multiplier"] = self.numbers.read_elixir_multiplier(frame, layout.scale)
+            out["towers"] = self.read_towers(frame, layout)
+        return out

@@ -6,6 +6,8 @@ Hand templates: the average edge features of the crops listed in the anchors fil
 hand slot for each card, colour and greyed-out). The colour/grey threshold is set between the two.
 Next-card templates are labelled automatically: when an empty hand slot fills with card X, the
 "next" icon just before showed X.
+Digit templates (tower HP, timer, x2/x3 badge): glyphs of the numbers read by eye in
+data/perception/number_anchors.json, averaged per digit.
 Output: raw/perception/templates.npz (outside git: it is cut from game art).
 """
 import argparse
@@ -19,7 +21,32 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "python"))
 from perception.layout import Layout  # noqa: E402
+from perception.numbers import REGIONS, glyphs  # noqa: E402
 from perception.reader import DEFAULT_TEMPLATES, EMPTY, ScreenReader, edge_features, hand_art, saturation  # noqa: E402
+
+
+def build_digits(anchors_path):
+    """Average glyph per digit from the hand-read numbers."""
+    doc = json.load(open(anchors_path, encoding="utf-8"))
+    per_digit = {}
+    for video_name, t, values in doc["anchors"]:
+        frame = Video(os.path.join(ROOT, "raw", "videos", video_name)).frame(t)
+        for region, text in values.items():
+            x0, y0, x1, y1 = REGIONS[region]
+            feats, _ = glyphs(frame[y0:y1, x0:x1])
+            digits = text.replace(":", "")
+            if len(feats) != len(digits):
+                print(f"  skipped {video_name} {t}s {region}: {len(feats)} glyphs for {text!r}")
+                continue
+            for d, f in zip(digits, feats):
+                per_digit.setdefault(d, []).append(f)
+    labels = sorted(per_digit)
+    templates = []
+    for d in labels:
+        m = np.mean(per_digit[d], axis=0)
+        templates.append((m - m.mean()) / (m.std() + 1e-6))
+    print("digit templates:", {d: len(per_digit[d]) for d in labels})
+    return np.array(labels), np.array(templates, dtype=np.float32)
 
 
 class Video:
@@ -39,6 +66,7 @@ class Video:
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--anchors", default=os.path.join(ROOT, "data", "perception", "card_anchors.json"))
+    p.add_argument("--number-anchors", default=os.path.join(ROOT, "data", "perception", "number_anchors.json"))
     p.add_argument("--out", default=DEFAULT_TEMPLATES)
     p.add_argument("--step", type=float, default=0.25, help="seconds between frames for next-card labelling")
     args = p.parse_args()
@@ -61,10 +89,11 @@ def main():
         names.append(name)
         templates.append((m - m.mean()) / (m.std() + 1e-6))
     color_threshold = (np.min(sats[True]) + np.max(sats[False])) / 2 if sats[True] and sats[False] else 60.0
+    digit_labels, digit_templates = build_digits(args.number_anchors)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     np.savez(args.out, hand_names=np.array(names), hand_templates=np.array(templates, dtype=np.float32),
              next_names=np.array(["?"]), next_templates=np.zeros((1, templates[0].size), np.float32),
-             color_threshold=np.float32(color_threshold))
+             color_threshold=np.float32(color_threshold), digit_labels=digit_labels, digit_templates=digit_templates)
     print(f"hand templates: {names}; colour threshold {color_threshold:.1f} "
           f"(colour min {min(sats[True]):.1f}, grey max {max(sats[False]):.1f})")
 
@@ -106,7 +135,7 @@ def main():
         next_templates.append((m - m.mean()) / (m.std() + 1e-6))
     np.savez(args.out, hand_names=np.array(names), hand_templates=np.array(templates, dtype=np.float32),
              next_names=np.array(next_names), next_templates=np.array(next_templates, dtype=np.float32),
-             color_threshold=np.float32(color_threshold))
+             color_threshold=np.float32(color_threshold), digit_labels=digit_labels, digit_templates=digit_templates)
     print("next-card templates:", {n: len(v) for n, v in labelled.items()})
     print("saved", args.out)
 

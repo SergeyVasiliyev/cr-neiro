@@ -1,0 +1,16 @@
+{
+  "_comment": "Numbers read by eye on recorded battles (1080x1920), used to build digit templates for python/perception/numbers.py. Timer values are written as shown (m:ss). Regions: see numbers.REGIONS.",
+  "anchors": [
+    ["video1.mp4", 150, {"red_king": "3545", "blue_king": "4749", "red_left": "1239", "blue_right": "3052", "timer": "0:38"}],
+    ["video1.mp4", 200, {"red_king": "2880", "blue_king": "4590", "red_left": "1005", "blue_right": "2438", "timer": "1:48"}],
+    ["video1.mp4", 255, {"red_king": "2880", "blue_king": "4590", "red_left": "752", "blue_right": "2438", "timer": "0:53"}],
+    ["video2.mp4", 120, {"red_left": "3052", "red_right": "2142", "blue_left": "2940", "blue_right": "3052", "timer": "1:05"}],
+    ["video2.mp4", 190, {"red_left": "864", "red_right": "2142", "blue_left": "650", "blue_right": "2546", "timer": "1:55"}],
+    ["video3.mp4", 150, {"red_king": "3488", "blue_king": "2150", "red_left": "2799", "blue_right": "3052", "timer": "0:33"}],
+    ["video3.mp4", 230, {"red_king": "3160", "blue_king": "1680", "red_left": "1881", "blue_right": "3052", "timer": "1:13"}],
+    ["video3.mp4", 290, {"red_king": "2298", "blue_king": "1680", "red_left": "1667", "blue_right": "2724", "timer": "0:13"}],
+    ["video4.mp4", 100, {"red_left": "2977", "red_right": "1507", "blue_left": "755", "blue_right": "3052", "timer": "1:23"}],
+    ["video4.mp4", 200, {"red_king": "3457", "blue_king": "3994", "red_right": "957", "blue_right": "2040", "timer": "1:43"}],
+    ["video4.mp4", 270, {"red_king": "3457", "blue_king": "3882", "red_right": "798", "blue_right": "1806", "timer": "0:33"}]
+  ]
+}
