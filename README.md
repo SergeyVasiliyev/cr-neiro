@@ -141,6 +141,35 @@ scripts\label.bat                                                  :: разме
 .venv\Scripts\python.exe tools\show_detections.py                 :: картинка с найденными юнитами
 ```
 
+- `units.py` — детектор → юниты в клетках поля; `tracker.py` — номера юнитов и память о спрятавшихся.
+
+## Двойник: копия настоящего матча в симуляторе (python/twin.py, python/live/session.py)
+
+Розыгрыши восстанавливаются с экрана (свои — по руке, соперника — по новым юнитам на его половине;
+повторы отсекаются симулятором: юнит уже есть на поле / карта ещё не вернулась в руку) и повторяются
+в симуляторе. Вживую симулятор каждый кадр подтягивается к увиденному: HP башен, позиции юнитов,
+пропавшие/пропущенные юниты; матч в нём не кончается сам (`set_follow_real`).
+
+```bat
+.venv\Scripts\python.exe tools\perceive_video.py --video raw\videos\video1.mp4  :: прочитать запись в raw\perception\cache
+.venv\Scripts\python.exe tools\twin_replay.py --cache raw\perception\cache\video1.json --video raw\videos\video1.mp4
+.venv\Scripts\python.exe tools\twin_live_eval.py   :: насколько живая копия совпадает с записями
+.venv\Scripts\python.exe tools\measure_speeds.py   :: реальные скорости ходьбы и полёта спеллов
+```
+
+## Игра в LDPlayer (tools/play_live.py)
+
+Только на гостевом аккаунте, в дружеских боях. В LDPlayer один раз включить
+«Настройки → Другие настройки → Отладка ADB → Открыть локальное подключение».
+Картинка берётся из окна LDPlayer (его можно перекрывать, но не сворачивать), касания — через ADB.
+
+```bat
+.venv\Scripts\python.exe tools\play_live.py --check                   :: связь, скорость, одно чтение экрана
+.venv\Scripts\python.exe tools\play_live.py --brain heuristic         :: только показывает, что сыграл бы
+.venv\Scripts\python.exe tools\play_live.py --brain heuristic --act   :: играет сам (P пауза, Q выход)
+.venv\Scripts\python.exe tools\play_live.py --brain runs\starter_v1\latest.pt --act
+```
+
 ## Структура
 
 ```

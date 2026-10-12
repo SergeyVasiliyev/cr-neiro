@@ -447,6 +447,85 @@ void test_match_ends(const GameData& data) {
     CHECK(!b.winner().has_value());  // nobody played: draw on equal tower HP
 }
 
+void test_force_play(const GameData& data) {
+    Battle b(data, kMixed, kMixed, 5);
+    // A card that is not in the simulated hand is swapped in; the deck still holds each card once.
+    const auto& p = b.player(Team::Blue);
+    std::string missing_card;
+    for (const auto& c : p.queue) missing_card = c;
+    CHECK(std::find(p.hand.begin(), p.hand.end(), missing_card) == p.hand.end());
+    const double short1 = b.force_play(Team::Blue, missing_card, Vec2{9.0, 10.0});
+    std::vector<std::string> all(p.hand.begin(), p.hand.end());
+    all.insert(all.end(), p.queue.begin(), p.queue.end());
+    all.erase(std::remove(all.begin(), all.end(), std::string()), all.end());
+    std::vector<std::string> deck(kMixed.begin(), kMixed.end());
+    std::sort(all.begin(), all.end());
+    std::sort(deck.begin(), deck.end());
+    CHECK(all == deck);
+    CHECK(short1 == 0.0 || data.card(missing_card).elixir > data.rules.start_elixir);
+    // Elixir it does not have is forgiven and reported.
+    const double elixir = p.elixir;
+    const double short2 = b.force_play(Team::Blue, "giant", Vec2{9.0, 10.0});
+    CHECK(std::abs(short2 - std::max(0.0, data.card("giant").elixir - elixir)) < 1e-9);
+    CHECK(p.elixir == 0.0);
+    // A troop seen a bit into the river (perception error) is moved to the nearest legal spot.
+    b.force_play(Team::Blue, "knight", Vec2{3.5, 15.8});
+    settle(b);
+    bool knight_ok = false;
+    for (const auto& e : b.entities()) {
+        if (e.def_id == "knight" && e.team == Team::Blue) knight_ok = e.pos.y < 15.5 && std::abs(e.pos.x - 3.5) < 1.0;
+    }
+    CHECK(knight_ok);
+    // Played, but where is unknown: the card cycles and its elixir is paid, nothing appears.
+    run_ms(b, 20000);
+    const size_t troops = static_cast<size_t>(troop_count(b, Team::Red));
+    const double before = b.player(Team::Red).elixir;
+    b.force_play(Team::Red, "minions", std::nullopt);
+    CHECK(std::abs(b.player(Team::Red).elixir - (before - data.card("minions").elixir)) < 1e-9);
+    CHECK(b.pending().empty() && static_cast<size_t>(troop_count(b, Team::Red)) == troops);
+}
+
+void test_twin_sync(const GameData& data) {
+    Battle b(data, kMixed, kMixed, 6);
+    // The screen shows a different hand and next card: the simulator takes them, the deck stays whole.
+    b.set_hand(Team::Blue, {"valkyrie", "", "knight", "skeletons"}, "giant");
+    const auto& p = b.player(Team::Blue);
+    CHECK(p.hand[0] == "valkyrie" && p.hand[1].empty() && p.hand[2] == "knight" && p.hand[3] == "skeletons");
+    CHECK(!p.queue.empty() && p.queue.front() == "giant");
+    CHECK(p.queue.size() == 5);  // 8 cards, 3 of them in hand
+    b.set_elixir(Team::Blue, 7.5);
+    CHECK(std::abs(p.elixir - 7.5) < 1e-9);
+    // An opponent unit seen 1 s after it was played: no blueprint delay left, it appears on the next tick.
+    b.force_play(Team::Red, "knight", Vec2{9.0, 24.0}, data.rules.deploy_delay_ms[0]);
+    b.step();
+    CHECK(troop_count(b, Team::Red) == 1);
+}
+
+void test_twin_corrections(const GameData& data) {
+    Battle b(data, kMixed, kMixed, 7);
+    const EntityId id = b.twin_spawn(Team::Red, "knight", {4.0, 20.0});
+    const Entity* k = b.find(id);
+    CHECK(k && k->deploy_ms_left == 0 && std::abs(k->pos.x - 4.0) < 1e-9);
+    CHECK(b.twin_move(id, {5.0, 19.0}) && std::abs(b.find(id)->pos.y - 19.0) < 1e-9);
+    CHECK(b.twin_set_hp(id, 100) && b.find(id)->hp == 100);
+    CHECK(b.twin_remove(id));
+    b.step();
+    CHECK(b.find(id) == nullptr);
+    // A princess tower read at 0 HP is destroyed: a crown for the other side.
+    CHECK(b.twin_set_hp(b.princess_tower(Team::Red, 0), 0));
+    b.step();
+    CHECK(b.player(Team::Blue).crowns == 1);
+}
+
+void test_follow_real(const GameData& data) {
+    // A crown up at the end of regulation normally ends the match; a twin keeps going into overtime.
+    Battle b(data, kMixed, kMixed, 8);
+    b.set_follow_real(true);
+    b.twin_set_hp(b.princess_tower(Team::Red, 0), 0);
+    run_ms(b, data.rules.regulation_ms + 5000);
+    CHECK(!b.finished() && b.phase() == Phase::Overtime);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -479,6 +558,10 @@ int main(int argc, char** argv) {
     test_spell_hits_deploying_troops(data);
     test_heuristic_bot_beats_random(data);
     test_match_ends(data);
+    test_force_play(data);
+    test_twin_sync(data);
+    test_twin_corrections(data);
+    test_follow_real(data);
 
     if (g_failed) {
         std::printf("%d check(s) failed\n", g_failed);

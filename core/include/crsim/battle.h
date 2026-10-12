@@ -126,6 +126,27 @@ public:
     bool can_deploy_at(Team team, Vec2 pos) const;  // troops
     bool can_cast_at(Vec2 pos) const;               // spells: anywhere on the arena
 
+    // Digital twin: repeats a play seen in the real game. The card (from the team's deck) is swapped
+    // into the hand if the simulated cycle disagrees, a troop position the simulator would refuse is
+    // moved to the nearest legal spot, and missing elixir is forgiven. Returns the elixir that was
+    // missing (0 when the simulator agrees the play was affordable); throws if the card is not in the deck.
+    // Without a position (seen played, but not where) only the cycle and the elixir change.
+    // ago_ms: the play happened that long ago (an opponent's unit is only seen once it is on the field),
+    // so its blueprint delay is already partly or fully over.
+    double force_play(Team team, const std::string& card_id, std::optional<Vec2> pos, int ago_ms = 0);
+    // Digital twin: make the simulated player hold what the screen shows. hand: 4 card ids ("" = empty
+    // slot), next: the card shown as next ("" = unknown). The rest of the cycle keeps its simulated order.
+    void set_hand(Team team, const std::array<std::string, kHandSize>& hand, const std::string& next);
+    void set_elixir(Team team, double elixir);
+    // Digital twin corrections from what the screen shows. Return false if there is no such entity.
+    bool twin_move(EntityId id, Vec2 pos);         // a troop is seen somewhere else
+    bool twin_set_hp(EntityId id, int hp);         // a tower (or troop) HP read from the screen
+    bool twin_remove(EntityId id);                 // a troop the game no longer has
+    EntityId twin_spawn(Team team, const std::string& card_id, Vec2 pos);  // one unit the simulator missed
+    // Digital twin: the real game decides when the match ends; the copy never finishes on its own
+    // (its crowns can be off), it just keeps the clock, the elixir speed and the overtime.
+    void set_follow_real(bool on) { follow_real_ = on; }
+
     // Advances the simulation by one tick (rules.tick_ms).
     void step();
 
@@ -159,6 +180,7 @@ private:
 
     Entity* find_mut(EntityId id);
     Vec2 to_absolute(Team team, Vec2 blue_pos) const;
+    void start_play(Team team, int hand_slot, std::optional<Vec2> pos);  // no legality checks
     void spawn_towers(Team team);
     void spawn_unit(Team team, const CardDef& card, Vec2 pos, int unit);
     void materialize_pending(int dt);
@@ -197,6 +219,7 @@ private:
     Phase phase_ = Phase::Regulation;
     std::optional<Team> winner_;
     bool king_destroyed_ = false;
+    bool follow_real_ = false;  // digital twin: never finish on our own
 
     std::array<PlayerState, 2> players_;
     std::array<TowerIds, 2> towers_;

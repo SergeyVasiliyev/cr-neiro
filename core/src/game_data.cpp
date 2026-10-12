@@ -122,6 +122,7 @@ GameData GameData::load(const std::filesystem::path& dir) {
     d.rules.card_refill_ms[2] = refill.at("x3").get<int>();
     d.rules.start_elixir = rules.at("start_elixir").get<double>();
     d.rules.max_elixir = rules.at("max_elixir").get<double>();
+    d.rules.speed_scale = rules.value("speed_scale", 1.0);
 
     const json arena = read_json(dir / "arena.json");
     d.arena.width = arena.at("width").get<double>();
@@ -159,6 +160,14 @@ GameData GameData::load(const std::filesystem::path& dir) {
         card.index = static_cast<int>(d.card_ids.size());
         d.card_ids.push_back(id);
     }
+    const double s = d.rules.speed_scale;
+    for (auto& [id, card] : d.cards) {
+        card.unit.speed *= s;
+        card.unit.attack.projectile_speed *= s;
+        card.spell.projectile_speed *= s;
+    }
+    d.princess_tower.attack.projectile_speed *= s;
+    d.king_tower.attack.projectile_speed *= s;
     return d;
 }
 

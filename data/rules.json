@@ -17,5 +17,7 @@
     "x1": 1400,
     "x2": 1400,
     "x3": 1400
-  }
+  },
+  "_comment_speed": "speed_scale: the real game moves everything ~1.15x faster than speed/60 tiles per second from the game files. Measured over 5 recordings (tools/measure_speeds.py, line fits over straight 2.5 s walks): medium units 1.11-1.16 tiles/s (file 60), giant 0.89-0.91 (45), minions 1.75 (90); vertical walks 1.17x, horizontal 1.10x; own fireball 11.7 vs 10.0, arrows 22.4 vs 18.3 tiles/s. Applied to walking and to all projectiles.",
+  "speed_scale": 1.15
 }

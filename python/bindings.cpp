@@ -219,6 +219,18 @@ PYBIND11_MODULE(crsim, m) {
         .def("play", &Battle::play, py::arg("team"), py::arg("hand_slot"), py::arg("pos"))
         .def("can_deploy_at", &Battle::can_deploy_at, py::arg("team"), py::arg("pos"))
         .def("can_cast_at", &Battle::can_cast_at, py::arg("pos"))
+        .def("force_play", &Battle::force_play, py::arg("team"), py::arg("card_id"), py::arg("pos"),
+             py::arg("ago_ms") = 0,
+             "Digital twin: repeat a real play (pos None = position unknown, only cycle and elixir; ago_ms = "
+             "it happened that long ago); returns the elixir the simulator thinks was missing")
+        .def("set_hand", &Battle::set_hand, py::arg("team"), py::arg("hand"), py::arg("next"),
+             "Digital twin: hand = 4 card ids ('' = empty), next = the next card ('' = unknown)")
+        .def("set_elixir", &Battle::set_elixir, py::arg("team"), py::arg("elixir"))
+        .def("twin_move", &Battle::twin_move, py::arg("id"), py::arg("pos"))
+        .def("twin_set_hp", &Battle::twin_set_hp, py::arg("id"), py::arg("hp"))
+        .def("twin_remove", &Battle::twin_remove, py::arg("id"))
+        .def("twin_spawn", &Battle::twin_spawn, py::arg("team"), py::arg("card_id"), py::arg("pos"))
+        .def("set_follow_real", &Battle::set_follow_real, py::arg("on"))
         .def("step", &Battle::step)
         .def("steps", [](Battle& b, int n) { for (int i = 0; i < n && !b.finished(); ++i) b.step(); }, py::arg("n"))
         .def_property_readonly("time_ms", &Battle::time_ms)

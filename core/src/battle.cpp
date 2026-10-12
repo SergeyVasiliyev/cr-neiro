@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace cr {
 namespace {
@@ -218,6 +219,137 @@ std::string Battle::check_play(Team team, int hand_slot, Vec2 pos) const {
 
 bool Battle::play(Team team, int hand_slot, Vec2 pos) {
     if (!check_play(team, hand_slot, pos).empty()) return false;
+    start_play(team, hand_slot, pos);
+    return true;
+}
+
+double Battle::force_play(Team team, const std::string& card_id, std::optional<Vec2> pos, int ago_ms) {
+    const CardDef& card = data_.card(card_id);
+    if (finished()) return 0.0;
+    PlayerState& p = players_[idx(team)];
+    int slot = -1;
+    for (int i = 0; i < kHandSize; ++i) {
+        if (p.hand[i] == card_id) slot = i;
+    }
+    if (slot < 0) {
+        // Not in the simulated hand: take it out of the queue into a hand slot (swapping with the card
+        // there, or filling an empty slot), so the deck still holds each card once.
+        auto it = std::find(p.queue.begin(), p.queue.end(), card_id);
+        if (it == p.queue.end()) throw std::invalid_argument("force_play: " + card_id + " is not in the deck");
+        for (int i = 0; i < kHandSize && slot < 0; ++i) {
+            if (!p.hand[i].empty()) slot = i;
+        }
+        if (slot >= 0) {
+            std::swap(*it, p.hand[slot]);
+        } else {
+            slot = 0;
+            p.hand[slot] = card_id;
+            p.queue.erase(it);
+        }
+    }
+    if (pos && card.type == CardType::Troop && !can_deploy_at(team, *pos)) {
+        // Perception is off by a fraction of a tile now and then: use the closest legal spot nearby.
+        double best = 1e9;
+        Vec2 best_pos = *pos;
+        for (double dy = -3.0; dy <= 3.0; dy += 0.25) {
+            for (double dx = -3.0; dx <= 3.0; dx += 0.25) {
+                const Vec2 q{pos->x + dx, pos->y + dy};
+                const double d = dx * dx + dy * dy;
+                if (d < best && can_deploy_at(team, q)) {
+                    best = d;
+                    best_pos = q;
+                }
+            }
+        }
+        pos = best_pos;
+    }
+    const double missing = std::max(0.0, card.elixir - p.elixir);
+    const size_t first_new = pending_.size();
+    start_play(team, slot, pos);
+    for (size_t i = first_new; i < pending_.size(); ++i) pending_[i].ms_left = std::max(0, pending_[i].ms_left - ago_ms);
+    return missing;
+}
+
+void Battle::set_hand(Team team, const std::array<std::string, kHandSize>& hand, const std::string& next) {
+    PlayerState& p = players_[idx(team)];
+    // Every card of the deck, in the simulated cycle order: hand first, then the queue.
+    std::vector<std::string> pool;
+    for (const auto& c : p.hand) {
+        if (!c.empty()) pool.push_back(c);
+    }
+    pool.insert(pool.end(), p.queue.begin(), p.queue.end());
+    auto take = [&pool](const std::string& c) {
+        auto it = std::find(pool.begin(), pool.end(), c);
+        if (it == pool.end()) throw std::invalid_argument("set_hand: " + c + " is not in the deck");
+        pool.erase(it);
+    };
+    for (const auto& c : hand) {
+        if (!c.empty()) take(c);
+    }
+    std::deque<std::string> queue;
+    if (!next.empty()) {
+        take(next);
+        queue.push_back(next);
+    }
+    // The simulated order of the hand's old cards is unknown to the screen; put the queue's own cards
+    // first (they were already waiting), then cards the simulator still had in hand.
+    std::vector<std::string> rest;
+    for (const auto& c : p.queue) {
+        auto it = std::find(pool.begin(), pool.end(), c);
+        if (it != pool.end()) {
+            rest.push_back(c);
+            pool.erase(it);
+        }
+    }
+    rest.insert(rest.end(), pool.begin(), pool.end());
+    queue.insert(queue.end(), rest.begin(), rest.end());
+    for (int i = 0; i < kHandSize; ++i) {
+        if (hand[i].empty() && !p.hand[i].empty()) p.refill_ms_left[i] = card_refill_ms();
+        if (!hand[i].empty()) p.refill_ms_left[i] = 0;
+        p.hand[i] = hand[i];
+    }
+    p.queue = std::move(queue);
+}
+
+bool Battle::twin_move(EntityId id, Vec2 pos) {
+    Entity* e = find_mut(id);
+    if (!e || e->is_building()) return false;
+    e->pos = {std::clamp(pos.x, 0.0, data_.arena.width), std::clamp(pos.y, 0.0, data_.arena.height)};
+    if (!e->air) keep_out_of_river(*e);
+    return true;
+}
+
+bool Battle::twin_set_hp(EntityId id, int hp) {
+    Entity* e = find_mut(id);
+    if (!e) return false;
+    e->hp = std::clamp(hp, 0, e->max_hp);  // 0: removed (and a tower counted as destroyed) on the next step
+    return true;
+}
+
+bool Battle::twin_remove(EntityId id) {
+    Entity* e = find_mut(id);
+    if (!e || e->is_building()) return false;
+    e->hp = 0;
+    return true;
+}
+
+EntityId Battle::twin_spawn(Team team, const std::string& card_id, Vec2 pos) {
+    const CardDef& card = data_.card(card_id);
+    if (card.type != CardType::Troop) throw std::invalid_argument("twin_spawn: " + card_id + " is not a troop");
+    spawn_unit(team, card, pos, 0);
+    Entity& e = entities_.back();
+    e.pos = {std::clamp(pos.x, 0.0, data_.arena.width), std::clamp(pos.y, 0.0, data_.arena.height)};
+    if (!e.air) keep_out_of_river(e);
+    e.deploy_ms_left = 0;  // it was seen walking around: long past its deploy timer
+    e.first_attack_delay_ms = 0;
+    return e.id;
+}
+
+void Battle::set_elixir(Team team, double elixir) {
+    players_[idx(team)].elixir = std::clamp(elixir, 0.0, static_cast<double>(data_.rules.max_elixir));
+}
+
+void Battle::start_play(Team team, int hand_slot, std::optional<Vec2> pos) {
     PlayerState& p = players_[idx(team)];
     const std::string card_id = p.hand[hand_slot];
     const CardDef& card = data_.card(card_id);
@@ -229,19 +361,19 @@ bool Battle::play(Team team, int hand_slot, Vec2 pos) {
     p.hand[hand_slot].clear();
     p.refill_ms_left[hand_slot] = card_refill_ms();
     const int play_index = static_cast<int>(p.plays.size());
-    p.plays.push_back({card.index, time_ms_, -1});
+    p.plays.push_back({card.index, time_ms_, pos ? -1 : time_ms_});
+    log(EventType::CardPlayed, team, kNoEntity, card_id);
+    if (!pos) return;  // twin: played somewhere we don't know; only the cycle and elixir change
 
     // The card shows up as a blueprint first; troops/spells materialise after the deploy delay.
     const int delay = deploy_delay_ms();
     if (card.type == CardType::Spell) {
-        pending_.push_back({team, card.index, pos, -1, delay, play_index});
+        pending_.push_back({team, card.index, *pos, -1, delay, play_index});
     } else {
         for (int i = 0; i < card.count; ++i) {
-            pending_.push_back({team, card.index, pos, i, delay + i * card.spawn_stagger_ms, play_index});
+            pending_.push_back({team, card.index, *pos, i, delay + i * card.spawn_stagger_ms, play_index});
         }
     }
-    log(EventType::CardPlayed, team, kNoEntity, card_id);
-    return true;
 }
 
 void Battle::cast_spell(Team team, const CardDef& card, Vec2 pos) {
@@ -632,19 +764,19 @@ void Battle::update_phase() {
         return blue > red ? Team::Blue : Team::Red;
     };
 
-    if (king_destroyed_) {
+    if (king_destroyed_ && !follow_real_) {
         finish(leader());
         return;
     }
     if (phase_ == Phase::Regulation && time_ms_ >= r.regulation_ms) {
-        if (blue != red) {
+        if (blue != red && !follow_real_) {
             finish(leader());
             return;
         }
         phase_ = Phase::Overtime;
         log(EventType::OvertimeStarted, Team::Blue, kNoEntity);
     }
-    if (phase_ != Phase::Overtime) return;
+    if (phase_ != Phase::Overtime || follow_real_) return;
     if (blue != red) {  // sudden death: first crown in overtime wins
         finish(leader());
         return;

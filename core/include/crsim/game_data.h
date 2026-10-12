@@ -109,6 +109,9 @@ struct RulesDef {
     int card_refill_ms[3] = {1000, 500, 350};
     double start_elixir = 5.0;
     double max_elixir = 10.0;
+    // Everything moves this much faster in the real game than "speed / 60 tiles per second" from the
+    // game files (walking and projectiles alike), measured from recordings (tools/measure_speeds.py).
+    double speed_scale = 1.0;
 };
 
 struct GameData {
