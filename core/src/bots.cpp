@@ -44,6 +44,7 @@ bool find_spell_target(const Battle& b, Team team, int* slot_out, Vec2* pos_out)
     const PlayerState& me = b.player(team);
     double best_value = 0.0;
     for (int slot = 0; slot < kHandSize; ++slot) {
+        if (me.hand[slot].empty()) continue;
         const CardDef& card = data.card(me.hand[slot]);
         if (!is_spell(card) || me.elixir + 1e-9 < card.elixir) continue;
         const SpellDef& s = card.spell;
@@ -81,6 +82,7 @@ public:
         if (rng_() % 2) return std::nullopt;  // plays on about half of the decision steps
         const ArenaDef& a = b.data().arena;
         const int slot = static_cast<int>(rng_() % kHandSize);
+        if (b.player(team).hand[slot].empty()) return std::nullopt;
         if (is_spell(b.data().card(b.player(team).hand[slot]))) {  // somewhere on the enemy half
             const Vec2 pos{uniform(rng_, 1.0, a.width - 1.0), uniform(rng_, a.river_max_y + 1.0, a.height - 1.0)};
             return if_playable(b, team, slot, from_own_frame(a, team, pos));
@@ -138,6 +140,7 @@ public:
         const double lane_x = tower_hp(left) <= tower_hp(1 - left) ? a.bridge_x.front() : a.bridge_x.back();
 
         const int slot = static_cast<int>(rng_() % kHandSize);
+        if (me.hand[slot].empty()) return std::nullopt;
         const CardDef& card = b.data().card(me.hand[slot]);
         if (is_spell(card)) {  // chip the tower of the chosen lane
             const int side = lane_x < a.width / 2.0 ? left : 1 - left;
@@ -158,6 +161,7 @@ private:
         int best = -1;
         int best_cost = -1;
         for (int slot = 0; slot < kHandSize; ++slot) {
+            if (me.hand[slot].empty()) continue;
             const CardDef& card = b.data().card(me.hand[slot]);
             if (is_spell(card)) continue;
             const TargetRules& t = card.unit.attack.targets;

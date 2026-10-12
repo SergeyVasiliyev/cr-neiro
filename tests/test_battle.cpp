@@ -80,10 +80,15 @@ void test_card_cycle(const GameData& data) {
     const int cost = data.card(before.hand[0]).elixir;
     CHECK(b.play(Team::Blue, 0, {9.0, 10.0}));
     const PlayerState& after = b.player(Team::Blue);
-    CHECK(after.hand[0] == before.queue.front());
+    CHECK(after.hand[0].empty());  // the slot waits for the next card
+    CHECK(!b.check_play(Team::Blue, 0, {9.0, 10.0}).empty());
     CHECK(after.queue.back() == before.hand[0]);
-    CHECK(after.queue.size() == before.queue.size());
     CHECK(std::abs(after.elixir - (before.elixir - cost)) < 1e-9);
+    run_ms(b, data.rules.card_refill_ms[0] - 50);
+    CHECK(b.player(Team::Blue).hand[0].empty());
+    run_ms(b, 50);
+    CHECK(b.player(Team::Blue).hand[0] == before.queue.front());
+    CHECK(b.player(Team::Blue).queue.size() == before.queue.size());
 }
 
 void test_deploy_zones(const GameData& data) {
@@ -98,7 +103,9 @@ void test_deploy_zones(const GameData& data) {
 
 void test_not_enough_elixir(const GameData& data) {
     Battle b(data, kKnights, kKnights, 1);
-    while (b.player(Team::Blue).elixir >= 3.0) CHECK(b.play(Team::Blue, 0, {9.0, 10.0}));
+    for (int slot = 0; slot < kHandSize && b.player(Team::Blue).elixir >= 3.0; ++slot) {
+        CHECK(b.play(Team::Blue, slot, {9.0, 10.0}));
+    }
     CHECK(!b.check_play(Team::Blue, 0, {9.0, 10.0}).empty());  // under 3 elixir left, knight costs 3
 }
 

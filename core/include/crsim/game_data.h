@@ -104,6 +104,9 @@ struct RulesDef {
     // A played card sits on the field as an untouchable "blueprint" this long before the troop
     // appears / the spell is launched; indexed by elixir speed x1, x2, x3.
     int deploy_delay_ms[3] = {1000, 1000, 1000};
+    // After a card is played its hand slot stays empty this long before the next card arrives;
+    // indexed by elixir speed x1, x2, x3 (NextSpellCooldownMS in battle_timelines.csv).
+    int card_refill_ms[3] = {1000, 500, 350};
     double start_elixir = 5.0;
     double max_elixir = 10.0;
 };

@@ -143,6 +143,24 @@ void Battle::materialize_pending(int dt) {
     std::erase_if(pending_, [](const PendingDeploy& p) { return p.ms_left <= 0; });
 }
 
+void Battle::refill_hands(int dt) {
+    for (auto& p : players_) {
+        for (int slot = 0; slot < kHandSize; ++slot) {
+            if (!p.hand[slot].empty()) continue;
+            p.refill_ms_left[slot] = std::max(0, p.refill_ms_left[slot] - dt);
+            if (p.refill_ms_left[slot] == 0 && !p.queue.empty()) {
+                p.hand[slot] = p.queue.front();
+                p.queue.pop_front();
+            }
+        }
+    }
+}
+
+int Battle::card_refill_ms() const {
+    const double m = elixir_multiplier();
+    return data_.rules.card_refill_ms[m >= 3.0 ? 2 : (m >= 2.0 ? 1 : 0)];
+}
+
 int Battle::deploy_delay_ms() const {
     const double m = elixir_multiplier();
     return data_.rules.deploy_delay_ms[m >= 3.0 ? 2 : (m >= 2.0 ? 1 : 0)];
@@ -191,6 +209,7 @@ std::string Battle::check_play(Team team, int hand_slot, Vec2 pos) const {
     if (finished()) return "match is finished";
     if (hand_slot < 0 || hand_slot >= kHandSize) return "bad hand slot";
     const PlayerState& p = players_[idx(team)];
+    if (p.hand[hand_slot].empty()) return "slot is empty";
     const CardDef& card = data_.card(p.hand[hand_slot]);
     if (p.elixir + kElixirEps < card.elixir) return "not enough elixir";
     if (card.type == CardType::Spell ? !can_cast_at(pos) : !can_deploy_at(team, pos)) return "cannot deploy there";
@@ -204,10 +223,11 @@ bool Battle::play(Team team, int hand_slot, Vec2 pos) {
     const CardDef& card = data_.card(card_id);
 
     p.elixir = std::max(0.0, p.elixir - card.elixir);
-    // The played card goes to the back of the queue; the front of the queue takes its slot.
+    // The played card goes to the back of the queue; its slot stays empty for a moment, then the
+    // front of the queue moves in (refill_hands).
     p.queue.push_back(card_id);
-    p.hand[hand_slot] = p.queue.front();
-    p.queue.pop_front();
+    p.hand[hand_slot].clear();
+    p.refill_ms_left[hand_slot] = card_refill_ms();
     const int play_index = static_cast<int>(p.plays.size());
     p.plays.push_back({card.index, time_ms_, -1});
 
@@ -256,6 +276,7 @@ void Battle::step() {
     time_ms_ += dt;
 
     regen_elixir(dt);
+    refill_hands(dt);
     for (auto& e : entities_) {
         if (e.deploy_ms_left > 0) e.deploy_ms_left = std::max(0, e.deploy_ms_left - dt);
     }

@@ -76,6 +76,11 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
         g[k++] = king && king->active ? 1.0f : 0.0f;
     }
     for (int slot = 0; slot < kHandSize; ++slot) {
+        if (me.hand[slot].empty()) {  // waiting for the next card
+            g[k++] = 0.0f;
+            g[k++] = 0.0f;
+            continue;
+        }
         const CardDef& card = data.card(me.hand[slot]);
         g[k++] = card.elixir / 10.0f;
         g[k++] = me.elixir + 1e-9 >= card.elixir ? 1.0f : 0.0f;
@@ -84,7 +89,9 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
     if (k != kGlobalFeatures) throw std::logic_error("rl: global feature count mismatch");
 
     // --- own cycle: hand, then the queue in the order the cards come back ---
-    for (int slot = 0; slot < kHandSize; ++slot) out.hand[slot] = card_token(data.card(me.hand[slot]));
+    for (int slot = 0; slot < kHandSize; ++slot) {
+        out.hand[slot] = me.hand[slot].empty() ? kPadToken : card_token(data.card(me.hand[slot]));
+    }
     for (int i = 0; i < kHandTokens - kHandSize; ++i) {
         out.hand[kHandSize + i] = i < static_cast<int>(me.queue.size()) ? card_token(data.card(me.queue[i])) : kPadToken;
     }
@@ -197,12 +204,14 @@ void action_mask(const Battle& b, Team team, uint8_t* out) {
     bool affordable[kHandSize];
     bool any = false;
     for (int slot = 0; slot < kHandSize; ++slot) {
-        affordable[slot] = me.elixir + 1e-9 >= b.data().card(me.hand[slot]).elixir;
+        affordable[slot] = !me.hand[slot].empty() && me.elixir + 1e-9 >= b.data().card(me.hand[slot]).elixir;
         any = any || affordable[slot];
     }
     if (!any) return;
     bool spell[kHandSize];
-    for (int slot = 0; slot < kHandSize; ++slot) spell[slot] = b.data().card(me.hand[slot]).type == CardType::Spell;
+    for (int slot = 0; slot < kHandSize; ++slot) {
+        spell[slot] = !me.hand[slot].empty() && b.data().card(me.hand[slot]).type == CardType::Spell;
+    }
     for (int cell = 0; cell < kCells; ++cell) {
         const Vec2 pos = cell_position(b, team, cell);
         const bool troop_ok = b.can_deploy_at(team, pos);

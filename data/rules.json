@@ -1,5 +1,5 @@
 {
-  "_comment": "Match rules (times in ms of elapsed battle time), from battle_timelines.csv 'Default' (ladder/tournament) in game files 16.402.21: 3:00 + 2:00 overtime; x1 for 2:00, x2 for the next 2:00, x3 for the last minute of overtime; a full 10-elixir bar takes 28 s at x1. start_elixir 6 as in the file (confirmed by the user). deploy_delay_ms: the 'blueprint' delay before a played card appears; 1 s in every phase (confirmed by the user; NextSpellCooldownMS in battle_timelines.csv is something else).",
+  "_comment": "Match rules (times in ms of elapsed battle time), from battle_timelines.csv 'Default' (ladder/tournament) in game files 16.402.21: 3:00 + 2:00 overtime; x1 for 2:00, x2 for the next 2:00, x3 for the last minute of overtime; a full 10-elixir bar takes 28 s at x1. start_elixir 6 as in the file (confirmed by the user). deploy_delay_ms: the 'blueprint' delay before a played card appears; 1 s in every phase (confirmed by the user; NextSpellCooldownMS in battle_timelines.csv is something else). card_refill_ms: a played card's hand slot stays empty this long before the next card arrives (NextSpellCooldownMS in battle_timelines.csv; confirmed by the user).",
   "tick_ms": 50,
   "regulation_ms": 180000,
   "double_elixir_from_ms": 120000,
@@ -12,5 +12,10 @@
     "x1": 1000,
     "x2": 1000,
     "x3": 1000
+  },
+  "card_refill_ms": {
+    "x1": 1000,
+    "x2": 500,
+    "x3": 350
   }
 }

@@ -236,7 +236,10 @@ class Viewer:
             pygame.draw.rect(self.screen, BRIDGE, (left, river_top - 3, a.bridge_half_width * 2 * TILE, river_h + 6))
 
     def draw_deploy_zone(self):
-        card = self.data.card(self.battle.player(self.control).hand[self.selected])
+        card_id = self.battle.player(self.control).hand[self.selected]
+        if not card_id:
+            return
+        card = self.data.card(card_id)
         spell = card.is_spell
         a = self.data.arena
         overlay = pygame.Surface((self.arena_w, self.arena_h), pygame.SRCALPHA)
@@ -402,6 +405,12 @@ class Viewer:
 
         card_w = (PANEL_W - 18) // 4
         for slot, card_id in enumerate(p.hand):
+            if not card_id:  # empty slot: the next card is on its way
+                rect = pygame.Rect(x + slot * (card_w + 4), y, card_w, 40)
+                self.hand_rects[(team, slot)] = rect
+                pygame.draw.rect(self.screen, (35, 35, 42), rect, border_radius=4)
+                self.text(rect.x + 4, rect.y + 22, f"{p.refill_ms_left[slot] / 1000:.1f}", DIM, self.small)
+                continue
             card = self.data.card(card_id)
             rect = pygame.Rect(x + slot * (card_w + 4), y, card_w, 40)
             self.hand_rects[(team, slot)] = rect
