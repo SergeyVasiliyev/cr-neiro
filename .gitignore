@@ -13,3 +13,5 @@ runs/
 *.obj
 *.ilk
 *.exe
+*.pt
+/weights/

@@ -42,6 +42,20 @@ def draw(frame, reader):
                 0.9 * L.scale, (0, 255, 255), 2)
     cv2.putText(out, f"elixir {res['elixir']:.2f}", (L.s(90), L.s(1530)), cv2.FONT_HERSHEY_SIMPLEX,
                 1.3 * L.scale, (255, 80, 255), 3)
+    if "timer" in res:
+        secs, ot = res["timer"]["seconds"], res["timer"]["overtime"]
+        clock = "--" if secs is None else f"{secs // 60}:{secs % 60:02d}"
+        cv2.putText(out, f"{'OT ' if ot else ''}{clock} x{res['elixir_multiplier']}", (L.s(640), L.s(140)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2 * L.scale, (0, 255, 255), 3)
+        # HP next to each tower: green = number read and confirmed by the bar, orange = bar estimate.
+        spots = {"red_king": (700, 60), "red_left": (60, 320), "red_right": (640, 320),
+                 "blue_king": (700, 1440), "blue_left": (60, 1280), "blue_right": (640, 1280)}
+        for name, (hp, exact) in res["towers"].items():
+            if hp is None:
+                continue
+            x, y = spots[name]
+            cv2.putText(out, f"{hp}{'' if exact else '~'}", (L.s(x), L.s(y)), cv2.FONT_HERSHEY_SIMPLEX,
+                        1.1 * L.scale, (0, 230, 0) if exact else (0, 160, 255), 3)
     return out
 
 

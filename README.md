@@ -120,6 +120,27 @@ C:\LDPlayer\LDPlayer9\adb.exe pull <папка из вывода>/split_install_
 Ещё нет: заклинания с эффектами (заморозка, яд, бревно и т. д.), здания-карты, эволюции и герои,
 спецмеханики из списка `unsupported`, нормальный поиск пути.
 
+## Распознавание игры с экрана (python/perception)
+
+Для бота, который играет в настоящий Clash Royale в LDPlayer (1080×1920, вертикально).
+Всё, что вырезано из картинок игры (образцы карт и цифр, кадры, разметка, детектор), лежит в `raw\`
+и в git не попадает; в репозитории только код и привязки (`data/perception/*.json`: видео, время, что там видно).
+
+- `layout.py` — где что на экране, перевод пиксель ↔ клетка поля (по шахматке травы).
+- `reader.py` — рука, следующая карта (по контурам рисунка, цветные и серые), эликсир по полоске.
+- `numbers.py` — HP башен (цифры, перепроверенные по полоске HP), таймер, овертайм, x2/x3.
+- Детектор юнитов — YOLO, обучается на разметке.
+
+```bat
+.venv\Scripts\python.exe toolsuild_perception_templates.py      :: образцы карт и цифр из записей
+.venv\Scripts\python.exe tools\perception_overlay.py --start 20   :: видео с тем, что прочитано
+.venv\Scripts\python.exe tools\extract_label_frames.py            :: кадры для разметки юнитов
+scripts\label.bat                                                  :: разметка юнитов кликами
+.venv\Scripts\python.exe toolsuild_detector_dataset.py          :: датасет YOLO
+.venv\Scripts\python.exe tools	rain_detector.py                  :: обучение детектора
+.venv\Scripts\python.exe tools\show_detections.py                 :: картинка с найденными юнитами
+```
+
 ## Структура
 
 ```
