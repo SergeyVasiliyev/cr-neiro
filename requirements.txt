@@ -1,0 +1,12 @@
+# Python 3.12. Recreate the environment:
+#   py -3.12 -m venv .venv
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+#   scripts\build.bat
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+numpy==2.5.4
+pybind11==3.1.0
+pygame==2.6.1
+gymnasium==1.4.0
+tensorboard==2.21.0
+pytest==9.1.1
