@@ -21,9 +21,14 @@ def main():
     p.add_argument("--batch", type=int, default=8)
     p.add_argument("--name", default="units")
     p.add_argument("--patience", type=int, default=60, help="stop after this many epochs without improvement")
+    p.add_argument("--resume", action="store_true", help="continue the stopped run --name from its last.pt")
     args = p.parse_args()
 
     from ultralytics import YOLO
+
+    if args.resume:
+        YOLO(os.path.join(ROOT, "raw", "detector", "runs", args.name, "weights", "last.pt")).train(resume=True)
+        return
 
     weights_dir = os.path.join(ROOT, "raw", "detector", "weights")
     os.makedirs(weights_dir, exist_ok=True)

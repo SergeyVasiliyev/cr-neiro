@@ -104,7 +104,11 @@ class Tool:
                 o.pop("auto", None)
                 o.pop("conf", None)
         save_labels(self.doc)
-        self.index = max(0, min(len(self.files) - 1, self.index + delta))
+        index = max(0, min(len(self.files) - 1, self.index + delta))
+        if mark_done and delta > 0:  # Space: on to the next frame still to do, skipping finished ones
+            done = {k for k, v in self.doc["frames"].items() if v.get("status") in ("labeled", "skip")}
+            index = next((i for i in range(self.index + 1, len(self.files)) if self.files[i] not in done), index)
+        self.index = index
         self.load_frame()
 
     # --- coordinates --------------------------------------------------------------------
@@ -228,10 +232,10 @@ class Tool:
 
         x = self.view_w + 14
         y = 12
-        done = sum(1 for v in self.doc["frames"].values() if v.get("status") in ("labeled", "skip"))
-        self.screen.blit(self.big.render(f"кадр {self.index + 1}/{len(self.files)}", True, TEXT), (x, y))
+        done = sum(1 for f in self.files if self.doc["frames"].get(f, {}).get("status") in ("labeled", "skip"))
+        self.screen.blit(self.big.render(f"осталось: {len(self.files) - done}", True, TEXT), (x, y))
         y += 26
-        self.screen.blit(self.font.render(f"размечено: {done}", True, DIM), (x, y))
+        self.screen.blit(self.font.render(f"кадр {self.index + 1}/{len(self.files)}, готово {done}", True, DIM), (x, y))
         y += 22
         status = {"labeled": "готов", "skip": "пропущен", "prelabeled": "подсказки детектора"}.get(self.entry["status"], "новый")
         self.screen.blit(self.small.render(f"{self.files[self.index]}  [{status}]", True, DIM), (x, y))

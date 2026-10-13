@@ -140,7 +140,9 @@ def convert_spell(card, row, projectiles, scaler):
         return None
     unsupported = {tag for field, tag in SPELL_UNSUPPORTED.items() if row.get(field) or proj.get(field)}
     radius = (row.get("radius") or proj.get("radius") or 0) / 1000  # the card's radius wins (Arrows)
-    damage = scaler.scale(proj.get("damage") or 0, card["rarity"])
+    # Scaled by the projectile's own rarity, like a troop's stats by the troop's: the Fireball card is Rare but
+    # its projectile is Common (level-11 tower damage 159 in the game = 23% of the common-scaled ~690).
+    damage = scaler.scale(proj.get("damage") or 0, proj.get("rarity") or card["rarity"])
     if not radius or not damage:
         unsupported.add("no_area_damage")
     targets = [t for t, key in (("ground", "aoe_to_ground"), ("air", "aoe_to_air")) if proj.get(key)]

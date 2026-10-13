@@ -3,7 +3,8 @@
     .venv\\Scripts\\python.exe tools\\build_detector_dataset.py [--val-video video3] [--all]
 
 Images are the arena part of each frame (rows 120..1540 at 1080x1920). Classes are unit x side,
-e.g. knight_blue / knight_red, so the detector also tells whose unit it is. Frames from --val-video
+e.g. knight_blue / knight_red, so the detector also tells whose unit it is. Spell hits look the same
+whoever cast them, so they have no side (fireball_hit_any): the bot knows its own spells from its hand. Frames from --val-video
 go to validation, which measures how well it works on a battle it never saw; --all puts every frame
 in training (for the final model) and keeps the same validation frames for reporting.
 Output: raw/detector/dataset/{images,labels}/{train,val} + data.yaml
@@ -21,7 +22,8 @@ sys.path.insert(0, os.path.join(ROOT, "python"))
 from label_units import ARENA, CLASSES  # noqa: E402
 
 TEAMS = ("blue", "red")
-NAMES = [f"{c[0]}_{t}" for c in CLASSES for t in TEAMS]
+TEAMLESS = ("fireball_hit", "arrows_hit")  # an explosion does not show who threw it
+NAMES = [f"{c[0]}_{t}" for c in CLASSES for t in (("any",) if c[0] in TEAMLESS else TEAMS)]
 
 
 def main():
@@ -57,7 +59,7 @@ def main():
             y0, y1 = max(0.0, y0), min(float(h), y1)
             if x1 - x0 < 4 or y1 - y0 < 4:
                 continue
-            cls = NAMES.index(f"{o['cls']}_{o['team']}")
+            cls = NAMES.index(f"{o['cls']}_{'any' if o['cls'] in TEAMLESS else o['team']}")
             lines.append(f"{cls} {(x0 + x1) / 2 / w:.6f} {(y0 + y1) / 2 / h:.6f} {(x1 - x0) / w:.6f} {(y1 - y0) / h:.6f}")
         is_val = name.startswith(args.val_video + "_")
         splits = ["val", "train"] if (is_val and args.all) else (["val"] if is_val else ["train"])

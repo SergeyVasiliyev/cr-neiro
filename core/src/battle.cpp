@@ -642,7 +642,9 @@ void Battle::update_projectiles(int dt) {
 }
 
 void Battle::apply_damage(Entity& target, int damage, int tower_damage_pct) {
-    if (target.is_building() && tower_damage_pct != 100) damage = damage * tower_damage_pct / 100;
+    // Crown towers take a share of some damage, rounded up: the game takes off the reduction rounded down
+    // (Fireball 688 -> 159, Arrows 122 -> 25 per wave at level 11, as seen in friendly battles).
+    if (target.is_building() && tower_damage_pct != 100) damage -= damage * (100 - tower_damage_pct) / 100;
     target.hp -= damage;
     if (target.kind == EntityKind::KingTower && !target.active && target.alive()) activate_king(target);
 }

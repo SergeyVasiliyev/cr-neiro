@@ -80,7 +80,8 @@ def main():
         for play in twin.own_plays_from_hand(frames):
             if play.card not in twin.SPELL_CARDS:
                 continue
-            hits = [tr for tr in tracks if tr.team == "blue" and tr.cls == play.card + "_hit" and tr.id not in used
+            hits = [tr for tr in tracks if tr.team in ("blue", "any") and tr.cls == play.card + "_hit"
+                    and tr.id not in used
                     and play.t + 0.8 < tr.first_seen < play.t + 4.5]
             if not hits:
                 continue

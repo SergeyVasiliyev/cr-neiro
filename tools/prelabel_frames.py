@@ -1,6 +1,6 @@
 """Pre-labels new frames with the current unit detector, for correcting in scripts\\label.bat.
 
-    .venv\\Scripts\\python.exe tools\\prelabel_frames.py [--weights raw/detector/runs/units/weights/best.pt] [--conf 0.3]
+    .venv\\Scripts\\python.exe tools\\prelabel_frames.py [--weights ...] [--conf 0.25]
 
 Only frames that have no entry in raw/labels/labels.json yet are touched. Their detections are stored
 with "auto": true and status "prelabeled"; the labelling tool shows them dashed until the frame is
@@ -16,12 +16,14 @@ import cv2
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "python"))
 from label_units import ARENA, FRAMES, LABELS, load_labels, save_labels  # noqa: E402
+from perception.units import DEFAULT_WEIGHTS  # noqa: E402
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--weights", default=os.path.join(ROOT, "raw", "detector", "runs", "units", "weights", "best.pt"))
-    p.add_argument("--conf", type=float, default=0.3)
+    p.add_argument("--weights", default=DEFAULT_WEIGHTS, help="default: the latest detector")
+    p.add_argument("--conf", type=float, default=0.25, help="low: a doubtful suggestion is quicker to delete than "
+                                                             "a missed unit to draw")
     args = p.parse_args()
 
     from ultralytics import YOLO
