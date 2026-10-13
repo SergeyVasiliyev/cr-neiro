@@ -6,6 +6,8 @@ bigger is better for the unit detector.
 """
 import ctypes
 import ctypes.wintypes as wt
+import os
+import subprocess
 
 import numpy as np
 
@@ -33,8 +35,30 @@ def _class_name(hwnd):
     return buf.value
 
 
-def find_render_window():
-    """The LDPlayer game area window, or None."""
+LDCONSOLE = r"C:\LDPlayer\LDPlayer9\ldconsole.exe"
+
+
+def instances():
+    """Running and stopped LDPlayer instances: [{index, title, render (game area window), running}].
+    Several can run at once (LDMultiPlayer): instance N is adb device emulator-(5554 + 2N)."""
+    if not os.path.exists(LDCONSOLE):
+        return []
+    out = subprocess.run([LDCONSOLE, "list2"], capture_output=True, text=True, timeout=15).stdout
+    found = []
+    for line in out.splitlines():
+        f = line.strip().split(",")
+        if len(f) >= 5 and f[0].isdigit():
+            found.append({"index": int(f[0]), "title": f[1], "render": int(f[3]), "running": f[4] == "1"})
+    return found
+
+
+def find_render_window(index=None):
+    """The LDPlayer game area window (of instance `index`, or the first one found), or None."""
+    if index is not None:
+        for inst in instances():
+            if inst["index"] == index and inst["running"] and user32.IsWindow(inst["render"]):
+                return inst["render"]
+        return None
     found = []
 
     def top(hwnd, _):
@@ -51,10 +75,11 @@ def find_render_window():
 
 
 class WindowScreen:
-    def __init__(self, hwnd=None):
-        self.hwnd = hwnd or find_render_window()
+    def __init__(self, hwnd=None, index=None):
+        self.hwnd = hwnd or find_render_window(index)
         if not self.hwnd:
-            raise RuntimeError("LDPlayer window not found: start LDPlayer (window visible, not minimised)")
+            which = "LDPlayer" if index is None else f"LDPlayer instance {index}"
+            raise RuntimeError(f"{which} window not found: start it (window visible, not minimised)")
         self._size = None
         self._screen_dc = user32.GetDC(0)
         self._mem_dc = gdi32.CreateCompatibleDC(self._screen_dc)

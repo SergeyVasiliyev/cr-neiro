@@ -12,6 +12,10 @@ from dataclasses import dataclass, field
 from .units import SPELL_HITS, SPELLS_IN_FLIGHT
 
 BIG_UNITS = {"giant"}  # can hide smaller units drawn behind them
+# A unit put on the field drops in from above: for its first ~0.3 s it is drawn higher than where it
+# stands (measured over 5 recordings: giant 2.3 tiles at first sight, knight 1.1, minions 0.9, archers
+# 0.2; on the spot after 0.3 s). Its position and speed only count after that.
+DROP_TIME = 0.3
 
 
 @dataclass
@@ -36,6 +40,20 @@ class Track:
     def predicted(self, t):
         dt = max(0.0, t - self.last_seen)
         return self.x + self.vx * dt, self.y + self.vy * dt
+
+    def landed(self, t=None):
+        """Still dropping in (spells and their hits don't drop)."""
+        return self.cls in SPELLS_IN_FLIGHT or self.cls in SPELL_HITS or \
+            (self.last_seen if t is None else t) - self.first_seen >= DROP_TIME
+
+    def landing_pos(self):
+        """Where the unit stands once it has dropped in (the first position after DROP_TIME)."""
+        if self.cls in SPELLS_IN_FLIGHT or self.cls in SPELL_HITS:
+            return self.history[0][1], self.history[0][2]
+        for t, x, y in self.history:
+            if t - self.first_seen >= DROP_TIME:
+                return x, y
+        return self.history[-1][1], self.history[-1][2]
 
 
 class Tracker:
@@ -82,7 +100,7 @@ class Tracker:
             used_d.add(di)
             tr, d = self.tracks[ti], detections[di]
             dt = t - tr.last_seen
-            if dt > 1e-6:
+            if dt > 1e-6 and t - tr.first_seen > DROP_TIME:  # the drop-in is not walking
                 a = 0.5  # smoothing of the velocity estimate
                 tr.vx = (1 - a) * tr.vx + a * (d.tile[0] - tr.x) / dt
                 tr.vy = (1 - a) * tr.vy + a * (d.tile[1] - tr.y) / dt

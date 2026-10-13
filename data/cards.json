@@ -2637,7 +2637,7 @@
     "type": "spell",
     "rarity": "Rare",
     "spell": {
-      "damage": 570,
+      "damage": 688,
       "radius": 2.5,
       "tower_damage_pct": 23,
       "waves": 1,
@@ -2675,7 +2675,7 @@
     "type": "spell",
     "rarity": "Rare",
     "spell": {
-      "damage": 1229,
+      "damage": 1484,
       "radius": 2.0,
       "tower_damage_pct": 23,
       "waves": 1,

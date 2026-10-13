@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <exception>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "crsim/battle.h"
@@ -288,7 +289,7 @@ void test_fireball_damage_and_flight(const GameData& data) {
     CHECK(t.play(Team::Blue, 0, tower_pos));
     run_ms(t, 4000);
     tower = t.find(t.princess_tower(Team::Red, 0));
-    CHECK(tower && tower->hp == tower->max_hp - fb.damage * fb.tower_damage_pct / 100);
+    CHECK(tower && tower->hp == tower->max_hp - (fb.damage - fb.damage * (100 - fb.tower_damage_pct) / 100));  // rounded up
 }
 
 // Arrows: three waves; minions (230 HP) survive the first and die to the full volley.
@@ -526,6 +527,19 @@ void test_follow_real(const GameData& data) {
     CHECK(!b.finished() && b.phase() == Phase::Overtime);
 }
 
+void test_spell_tower_damage(const GameData& data) {
+    // Level 11 in a real friendly battle: Fireball takes 159 off a crown tower, each Arrows wave 25.
+    for (const auto& [card, per_hit, hits] : {std::tuple{"fireball", 159, 1}, std::tuple{"arrows", 25, 3}}) {
+        const Deck deck = {"knight", "archers", "minions", "arrows", "fireball", "giant", "mini_pekka", "musketeer"};
+        Battle b(data, deck, deck, 9);
+        const EntityId tower = b.princess_tower(Team::Red, 0);
+        const int before = b.find(tower)->hp;
+        b.force_play(Team::Blue, card, b.find(tower)->pos);
+        run_ms(b, 6000);
+        CHECK(before - b.find(tower)->hp == per_hit * hits);
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -562,6 +576,7 @@ int main(int argc, char** argv) {
     test_twin_sync(data);
     test_twin_corrections(data);
     test_follow_real(data);
+    test_spell_tower_damage(data);
 
     if (g_failed) {
         std::printf("%d check(s) failed\n", g_failed);

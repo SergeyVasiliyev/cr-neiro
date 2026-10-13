@@ -187,6 +187,8 @@ def main():
     p.add_argument("--no-detector", action="store_true", help="no unit detection (the opponent stays invisible)")
     p.add_argument("--weights", default=None, help="unit detector weights (default: the latest)")
     p.add_argument("--serial", default=None, help="adb device (default: the first emulator)")
+    p.add_argument("--instance", type=int, default=None,
+                   help="LDPlayer instance number with several running (0 = the first; see LDMultiPlayer)")
     p.add_argument("--device", default="0", help="detector on: 0 = GPU, cpu = processor")
     p.add_argument("--capture", default="window", choices=("window", "adb"),
                    help="window = copy the LDPlayer window (fast), adb = emulator screenshots (slow)")
@@ -198,8 +200,9 @@ def main():
     if args.video:
         screen = device = VideoScreen(args.video, args.video_start)
     else:
-        device = Device(args.serial)  # touches always go through ADB
-        screen = WindowScreen() if args.capture == "window" else device
+        serial = args.serial or (f"emulator-{5554 + 2 * args.instance}" if args.instance is not None else None)
+        device = Device(serial)  # touches always go through ADB
+        screen = WindowScreen(index=args.instance) if args.capture == "window" else device
     reader = ScreenReader()
     if args.check:
         check(device, screen, reader)
@@ -210,6 +213,8 @@ def main():
         from perception.units import DEFAULT_WEIGHTS, UnitDetector
         detector = UnitDetector(args.weights or DEFAULT_WEIGHTS, device=0 if args.device == "0" else args.device)
     data = load_data()
+    from perception.unit_hp import UnitHpReader
+    hp_reader = UnitHpReader()
     match = LiveMatch(data)
     brain = make_brain(args.brain)
     playing = args.act
@@ -236,7 +241,7 @@ def main():
             except ValueError:
                 continue
             detections = detector.detect(frame) if detector else []
-            match.update(t, seen, detections)
+            match.update(t, seen, detections, hp_reader.bars(frame) if detector else None)
             frames += 1
             if t - fps_t0 > 2.0:
                 fps, frames, fps_t0 = frames / (t - fps_t0), 0, t

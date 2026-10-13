@@ -72,3 +72,25 @@ def test_single_frame_false_detection_is_not_reported():
     tr.update(DT, [])
     tr.update(4 * DT, [])
     assert tr.tracks == []
+
+
+def test_drop_in_is_not_walking():
+    # A giant drops in from 2.3 tiles above its spot in 0.3 s, then stands in its deploy timer.
+    tr = Tracker()
+    for k in range(12):
+        t = k * DT
+        y = 10.0 + max(0.0, 2.3 * (1 - t / 0.3))
+        tr.update(t, [det("giant", "blue", 9.0, y)])
+    (track,) = tr.tracks
+    assert abs(track.landing_pos()[1] - 10.0) < 0.05
+    assert abs(track.vy) < 0.05  # the fall did not become a speed
+
+
+def test_arrows_in_pieces_are_one_volley():
+    from perception.units import merge_spells
+    pieces = [det("arrows", "blue", 9.0, 12.0), det("arrows", "blue", 9.5, 15.0), det("arrows", "blue", 8.6, 17.5),
+              det("arrows", "red", 4.0, 20.0), det("knight", "blue", 3.5, 8.0)]
+    merged = merge_spells(pieces)
+    blue = [d for d in merged if d.cls == "arrows" and d.team == "blue"]
+    assert len(blue) == 1 and abs(blue[0].tile[1] - 14.83) < 0.01
+    assert len(merged) == 3  # one blue volley, one red, the knight

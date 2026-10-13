@@ -20,7 +20,9 @@ sys.path.insert(0, HERE)
 import crsim  # noqa: E402
 from crsim_env import DEFAULT_DECK, load_data  # noqa: E402
 from perception.tracker import Tracker  # noqa: E402
-from perception.units import Detection  # noqa: E402
+from perception.units import SPELL_HITS, Detection, merge_spells  # noqa: E402
+
+SPELL_SAME_PLAY = (1.5, 4.5)  # hits this close in seconds and tiles belong to one cast (arrows: 3 waves)
 
 # detector class <-> card id
 UNIT_OF_CARD = {"knight": "knight", "archers": "archer", "minions": "minion", "giant": "giant",
@@ -38,8 +40,11 @@ def load_cache(path):
         return json.load(f)
 
 
-def detections(frame):
-    return [Detection(d[0], d[1], d[2], tuple(d[3:7]), (d[7], d[8])) for d in frame["det"]]
+def detections(frame, min_conf=0.35):
+    """The frame's detections as perception.units.Detection, at the live bot's confidence threshold
+    (spell pieces merged, as the live detector does)."""
+    return merge_spells([Detection(d[0], d[1], d[2], tuple(d[3:7]), (d[7], d[8])) for d in frame["det"]
+                         if d[2] >= min_conf])
 
 
 # --- 1. clock ----------------------------------------------------------------------------------------
@@ -78,22 +83,31 @@ class Play:
     rejected: str = None  # opponent candidates the twin decided were not a new play: why
 
 
+EMPTY_FOR = 0.25  # s a slot must stay empty to count as a play (a played card's slot stays empty ~1.3 s;
+                  # a greyed-out card sometimes reads as empty for a frame)
+
+
 def own_plays_from_hand(frames):
-    """A card that leaves its slot (slot becomes empty) was played between the two frames."""
+    """A card that leaves its slot (the slot stays empty) was played when it first read empty."""
     plays = []
-    last = [None] * 4
-    prev_t = None
+    last = [None] * 4        # last card read in each slot
+    empty_since = [None] * 4  # (time first read empty, the card that was there)
     for fr in frames:
+        t = fr["t"]
         for slot, card in enumerate(fr["hand"]):
             if card == "?":
                 continue  # moving: being dragged or sliding in
             if card is None:
-                if last[slot] is not None and prev_t is not None:
-                    plays.append(Play("blue", last[slot], (prev_t + fr["t"]) / 2, source="hand"))
-                last[slot] = None
+                if last[slot] is not None and empty_since[slot] is None:
+                    empty_since[slot] = (t, last[slot])
+                if empty_since[slot] is not None and t - empty_since[slot][0] >= EMPTY_FOR:
+                    plays.append(Play("blue", empty_since[slot][1], empty_since[slot][0] - 0.05, source="hand"))
+                    empty_since[slot] = None
+                    last[slot] = None
             else:
+                if empty_since[slot] is not None and card == empty_since[slot][1]:
+                    empty_since[slot] = None  # a flicker: the same card is still there
                 last[slot] = card
-        prev_t = fr["t"]
     return plays
 
 
@@ -110,12 +124,17 @@ def place_own_plays(plays, tracks, delay=1.0):
     used = set()
     for p in plays:
         if p.card in SPELL_CARDS:
-            hits = [tr for tr in tracks if tr.team == "blue" and tr.cls == p.card + "_hit"
+            hits = [tr for tr in tracks if tr.cls == p.card + "_hit"
                     and p.t + delay < tr.first_seen < p.t + delay + 4.0 and tr.id not in used]
+            # A hit shows no side (older detectors guessed one, often wrongly): take one marked ours or
+            # side-less first, a "red" one only if there is nothing else.
+            hits.sort(key=lambda tr: (tr.team == "red", tr.first_seen))
             if hits:
-                used.add(hits[0].id)
-                p.pos = (hits[0].history[0][1], hits[0].history[0][2])
-                p.units = [hits[0].id]
+                first = hits[0]
+                p.pos = first.landing_pos()
+                p.units = [tr.id for tr in hits if tr.first_seen - first.first_seen < SPELL_SAME_PLAY[0]
+                           and math.dist(tr.landing_pos(), p.pos) < SPELL_SAME_PLAY[1]]  # every wave is ours
+                used.update(p.units)
             continue
         unit = UNIT_OF_CARD.get(p.card)
         count = {"archers": 2, "minions": 3}.get(p.card, 1)
@@ -124,7 +143,8 @@ def place_own_plays(plays, tracks, delay=1.0):
         new = new[:count]
         if new:
             used.update(tr.id for tr in new)
-            p.pos = (statistics.fmean(tr.history[0][1] for tr in new), statistics.fmean(tr.history[0][2] for tr in new))
+            p.pos = (statistics.fmean(tr.landing_pos()[0] for tr in new),
+                     statistics.fmean(tr.landing_pos()[1] for tr in new))
             p.units = [tr.id for tr in new]
 
 
@@ -134,16 +154,25 @@ def enemy_candidates(tracks, own_unit_ids, delay=1.0, spell_speed=None):
     real new play is decided during the replay, against the simulated battle (see judge_enemy)."""
     out = []
     taken = set()
-    red = [tr for tr in tracks if tr.team == "red" and tr.id not in own_unit_ids]
+    tracks_by_id = {tr.id: tr for tr in tracks}
+    # Spell hits without a side ("any") that none of our spells claimed are theirs.
+    red = [tr for tr in tracks if (tr.team == "red" or (tr.team == "any" and tr.cls in SPELL_HITS))
+           and tr.id not in own_unit_ids]
     for tr in red:
         if tr.id in taken:
             continue
-        x, y = tr.history[0][1], tr.history[0][2]
+        x, y = tr.landing_pos()
         if tr.cls.endswith("_hit"):
             spell = tr.cls[:-4]
+            taken.add(tr.id)
+            same = [p for p in out if p.card == spell and p.source == "hit"
+                    and abs(tracks_by_id[p.units[0]].first_seen - tr.first_seen) < SPELL_SAME_PLAY[0]
+                    and math.dist(p.pos, (x, y)) < SPELL_SAME_PLAY[1]]
+            if same:
+                same[0].units.append(tr.id)  # another wave of the same arrows
+                continue
             flight = math.dist((x, y), KING["red"]) / (spell_speed or {}).get(spell, 10.0)
             out.append(Play("red", spell, tr.first_seen - flight - delay, (x, y), "hit", [tr.id]))
-            taken.add(tr.id)
             continue
         card = CARD_OF_UNIT.get(tr.cls)
         if card is None or not 15.5 <= y <= 31.6:
@@ -154,9 +183,9 @@ def enemy_candidates(tracks, own_unit_ids, delay=1.0, spell_speed=None):
         count = {"archers": 2, "minions": 3}.get(card, 1)
         group = [tr] + [o for o in red if o is not tr and o.id not in taken and o.cls == tr.cls
                         and abs(o.first_seen - tr.first_seen) < 0.6
-                        and math.dist((o.history[0][1], o.history[0][2]), (x, y)) < 3.0][:count - 1]
+                        and math.dist(o.landing_pos(), (x, y)) < 3.0][:count - 1]
         taken.update(o.id for o in group)
-        pos = (statistics.fmean(o.history[0][1] for o in group), statistics.fmean(o.history[0][2] for o in group))
+        pos = (statistics.fmean(o.landing_pos()[0] for o in group), statistics.fmean(o.landing_pos()[1] for o in group))
         out.append(Play("red", card, tr.first_seen - delay, pos, "units", [o.id for o in group]))
     # One unit sometimes gets two labels at once (a red mini pekka partly seen as minions): candidates
     # of different cards at the same spot and moment are one play; keep the better-seen one.
@@ -170,15 +199,18 @@ def enemy_candidates(tracks, own_unit_ids, delay=1.0, spell_speed=None):
     return sorted(kept, key=lambda p: p.t)
 
 
-def judge_enemy(battle, data, cand, accepted, same_unit_radius=3.5, cycle_gap=3):
+def judge_enemy(battle, data, cand, accepted, same_unit_radius=3.5, cycle_gap=3, seen_elsewhere=()):
     """Is this candidate a new opponent play? The simulated battle knows what is already on the field:
     a "new" mini pekka next to one the simulator still has walking there is that same unit seen again.
     And a card comes back to the hand only after the others cycle: the same card again within
-    cycle_gap of their plays is not possible (a play of theirs we missed makes this a little loose)."""
+    cycle_gap of their plays is not possible (a play of theirs we missed makes this a little loose).
+    seen_elsewhere: positions of other units of that kind on screen right now - a simulated unit standing
+    on one of those is that unit, so it doesn't explain the candidate (a second giant next to the first)."""
     if cand.source == "units":
         near = sum(1 for e in battle.entities
                    if not e.is_building and e.team == crsim.Team.RED and e.def_id == cand.card
-                   and math.dist((e.pos.x, e.pos.y), cand.pos) < same_unit_radius)
+                   and math.dist((e.pos.x, e.pos.y), cand.pos) < same_unit_radius
+                   and not any(math.dist((e.pos.x, e.pos.y), q) < 1.2 for q in seen_elsewhere))
         near += sum(1 for d in battle.pending if d.team == crsim.Team.RED and d.unit >= 0
                     and d.card_index == data.card(cand.card).index
                     and math.dist((d.pos.x, d.pos.y), cand.pos) < same_unit_radius)
@@ -266,6 +298,11 @@ def match_units(sim_units, real_tracks, max_dist=3.0):
         used_r.add(j)
         out.append((i, j, d))
     return out
+
+
+def bars_from_cache(frame):
+    from perception.unit_hp import Bar
+    return [Bar(b[0], tuple(b[1:5]), b[5], b[6], 1.0) for b in frame.get("bars", [])]
 
 
 def seen_from_cache(frame):
