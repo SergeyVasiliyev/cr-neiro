@@ -21,7 +21,7 @@ import crsim  # noqa: E402  (built into python/ by scripts\build.bat)
 BLUE, RED = crsim.Team.BLUE, crsim.Team.RED
 DEFAULT_DECK = "knight,archers,minions,arrows,fireball,giant,mini_pekka,musketeer"  # starter deck
 
-DECISION_TICKS = 10  # bots and models act every 0.5 s, like in training
+DECISION_TICKS = 6  # bots and models act every 0.3 s (--decision-ticks: use what the model was trained with)
 TILE = 22  # pixels per arena tile
 MARGIN = 10
 PANEL_W = 320
@@ -87,6 +87,7 @@ def make_agent(spec, seed):
 class Viewer:
     def __init__(self, args):
         self.data = crsim.GameData.load(args.data)
+        self.decision_ticks = args.decision_ticks
         self.decks = {BLUE: args.blue_deck.split(","), RED: args.red_deck.split(",")}
         for team, deck in self.decks.items():
             if len(deck) != 8:
@@ -126,7 +127,7 @@ class Viewer:
         self.selected = None
 
     def tick(self):
-        if self.ticks % DECISION_TICKS == 0:
+        if self.ticks % self.decision_ticks == 0:
             moves = [self.agents[t].decide(self.battle, t) for t in (BLUE, RED) if self.agent_on[t]]
             for move in moves:
                 move()
@@ -434,6 +435,8 @@ def main():
     parser.add_argument("--blue-deck", default=DEFAULT_DECK, help="8 id карт через запятую")
     parser.add_argument("--red-deck", default=DEFAULT_DECK, help="8 id карт через запятую")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--decision-ticks", type=int, default=DECISION_TICKS,
+                        help="тиков (50 мс) между решениями ботов и модели: 6 = 0.3 с, 10 = 0.5 с")
     viewer = Viewer(parser.parse_args())
 
     clock = pygame.time.Clock()

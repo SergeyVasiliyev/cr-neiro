@@ -20,7 +20,10 @@ sys.path.insert(0, HERE)
 import crsim  # noqa: E402
 from crsim_env import DEFAULT_DECK, load_data  # noqa: E402
 from perception.tracker import Tracker  # noqa: E402
-from perception.units import SPELL_HITS, Detection, merge_spells  # noqa: E402
+from perception.layout import Layout  # noqa: E402
+from perception.units import SPELL_HITS, Detection, UnitDetector, merge_spells  # noqa: E402
+
+_LAYOUT = Layout(scale=1.0)
 
 SPELL_SAME_PLAY = (1.5, 4.5)  # hits this close in seconds and tiles belong to one cast (arrows: 3 waves)
 
@@ -43,8 +46,10 @@ def load_cache(path):
 def detections(frame, min_conf=0.35):
     """The frame's detections as perception.units.Detection, at the live bot's confidence threshold
     (spell pieces merged, as the live detector does)."""
-    return merge_spells([Detection(d[0], d[1], d[2], tuple(d[3:7]), (d[7], d[8])) for d in frame["det"]
-                         if d[2] >= min_conf])
+    # Tiles are worked out again from the boxes (1080-wide pixels), so caches made before a calibration
+    # change follow it.
+    return merge_spells([Detection(d[0], d[1], d[2], tuple(d[3:7]), UnitDetector.box_to_tile(d[0], d[3:7], _LAYOUT))
+                         for d in frame["det"] if d[2] >= min_conf])
 
 
 # --- 1. clock ----------------------------------------------------------------------------------------

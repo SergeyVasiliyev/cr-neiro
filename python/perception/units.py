@@ -17,7 +17,12 @@ ARENA_ROWS = (120, 1540)  # the crop the detector was trained on (1080x1920 refe
 FLYING = {"minion"}
 SPELLS_IN_FLIGHT = {"fireball", "arrows"}
 SPELL_HITS = {"fireball_hit", "arrows_hit"}  # side "any": an explosion does not show who threw it
-FLYING_OFFSET_TILES = 1.0  # minions are drawn about a tile above the ground they fly over
+# Where a unit really stands, from its box. Calibrated by seeing the same units from both sides at once
+# (two recordings of one battle): a position error shows up mirrored in the other view, so half the
+# difference is the error of one view. x is right; y (tiles) is off by unit kind:
+FLYING_OFFSET_TILES = 1.15  # minions are drawn this far above the ground they fly over
+FEET_OFFSET_TILES = {"giant": 0.47, "mini_pekka": 0.25, "knight": 0.20, "archer": 0.20, "musketeer": 0.0}
+#   the box bottom (shadow, feet in front) lies this far below where a ground troop stands
 HIT_MERGE_TILES = 4.5      # spell hit boxes closer than this are one explosion (arrows: 3 waves, one spot)
 
 
@@ -71,6 +76,18 @@ class UnitDetector:
         self.model = YOLO(weights)
         self.conf, self.device, self.imgsz = conf, device, imgsz
 
+    @staticmethod
+    def box_to_tile(unit, box, layout):
+        """Arena tile of a detection box (full-frame pixels) of kind `unit`."""
+        bx0, by0, bx1, by1 = box
+        if unit in FLYING:
+            tx, ty = layout.px_to_tile((bx0 + bx1) / 2, (by0 + by1) / 2)
+            return tx, ty - FLYING_OFFSET_TILES
+        if unit in SPELLS_IN_FLIGHT or unit in SPELL_HITS:
+            return layout.px_to_tile((bx0 + bx1) / 2, (by0 + by1) / 2)
+        tx, ty = layout.px_to_tile((bx0 + bx1) / 2, by1)  # ground troop: feet near the bottom of the box
+        return tx, ty + FEET_OFFSET_TILES.get(unit, 0.0)
+
     def detect(self, frame):
         layout = Layout.for_frame(frame)
         y0, y1 = layout.s(ARENA_ROWS[0]), layout.s(ARENA_ROWS[1])
@@ -82,12 +99,6 @@ class UnitDetector:
             unit, team = self.model.names[int(cls)].rsplit("_", 1)
             bx0, by0, bx1, by1 = (float(v) for v in box)
             by0, by1 = by0 + y0, by1 + y0
-            if unit in FLYING:
-                tx, ty = layout.px_to_tile((bx0 + bx1) / 2, (by0 + by1) / 2)
-                ty -= FLYING_OFFSET_TILES
-            elif unit in SPELLS_IN_FLIGHT or unit in SPELL_HITS:
-                tx, ty = layout.px_to_tile((bx0 + bx1) / 2, (by0 + by1) / 2)
-            else:  # ground troop: feet at the bottom centre of the box
-                tx, ty = layout.px_to_tile((bx0 + bx1) / 2, by1)
-            out.append(Detection(unit, team, float(conf), (bx0, by0, bx1, by1), (tx, ty)))
+            tile = self.box_to_tile(unit, (bx0, by0, bx1, by1), layout)
+            out.append(Detection(unit, team, float(conf), (bx0, by0, bx1, by1), tile))
         return merge_spells(out)

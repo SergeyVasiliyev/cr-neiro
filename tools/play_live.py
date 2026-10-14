@@ -256,7 +256,9 @@ def main():
                     card = battle.player(BLUE).hand[slot]
                     real = seen["hand"][slot]
                     cost = data.card(card).elixir if card else 99
-                    if card and real["card"] == card and not real["unknown"] and seen["elixir"] + 0.05 >= cost:
+                    elixir = seen.get("elixir")  # None: not readable this frame - wait for the next one
+                    if card and real["card"] == card and not real["unknown"] and elixir is not None \
+                            and elixir + 0.05 >= cost:
                         last_move = (card, pos)
                         if playing:
                             device.play_card(slot, pos, args.method)

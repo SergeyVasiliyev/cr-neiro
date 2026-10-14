@@ -1,6 +1,6 @@
 """Turns the unit labels (raw/labels/labels.json) into a YOLO dataset.
 
-    .venv\\Scripts\\python.exe tools\\build_detector_dataset.py [--val-video video3] [--all]
+    .venv\\Scripts\\python.exe tools\\build_detector_dataset.py [--val-video video3] [--all] [--auto]
 
 Images are the arena part of each frame (rows 120..1540 at 1080x1920). Classes are unit x side,
 e.g. knight_blue / knight_red, so the detector also tells whose unit it is. Spell hits look the same
@@ -33,9 +33,19 @@ def main():
     p.add_argument("--out", default=os.path.join(ROOT, "raw", "detector", "dataset"))
     p.add_argument("--val-video", default="video3")
     p.add_argument("--all", action="store_true", help="train on every frame (validation frames included)")
+    p.add_argument("--auto", action="store_true",
+                   help="also train on the automatic labels of two-sided recordings (tools/auto_label.py)")
     args = p.parse_args()
 
     doc = json.load(open(args.labels, encoding="utf-8"))
+    sources = {name: args.frames for name in doc["frames"]}
+    auto_path = os.path.join(os.path.dirname(args.labels), "auto_labels.json")
+    if args.auto and os.path.exists(auto_path):
+        auto = json.load(open(auto_path, encoding="utf-8"))
+        for name, entry in auto["frames"].items():
+            if name not in doc["frames"]:  # a person's labels win
+                doc["frames"][name] = {"status": "labeled", "objects": entry["objects"]}
+                sources[name] = os.path.join(os.path.dirname(args.frames), "auto_frames")
     if os.path.exists(args.out):
         shutil.rmtree(args.out)
     for split in ("train", "val"):
@@ -46,7 +56,7 @@ def main():
     for name, entry in sorted(doc["frames"].items()):
         if entry.get("status") != "labeled":
             continue
-        img = cv2.imread(os.path.join(args.frames, name))
+        img = cv2.imread(os.path.join(sources[name], name))
         if img is None:
             continue
         crop = img[ARENA[0]:ARENA[1]]

@@ -58,5 +58,7 @@ void action_mask(const Battle& battle, Team team, uint8_t* out);
 Vec2 cell_position(const Battle& battle, Team team, int cell);
 // Plays the card for `action`. kNoop and illegal actions do nothing and return false.
 bool apply_action(Battle& battle, Team team, int action);
+// The action for playing hand slot `slot` at `pos` (absolute tiles): the cell it falls in, own frame.
+int encode_action(const Battle& battle, Team team, int slot, Vec2 pos);
 
 }  // namespace cr::rl

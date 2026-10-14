@@ -151,22 +151,30 @@ def fraction(bar, cls):
     return max(0.0, min(1.0, bar.filled / full))
 
 
+# Where a unit's badge sits relative to its detection box (px at 1080 wide): badge left edge minus the box
+# centre, box top minus the badge bottom. Measured on isolated units over 11 recordings (the spread is a few px).
+BADGE_OFFSET = {"archer": (-29, -2), "minion": (-30, -1), "knight": (-44, 13), "mini_pekka": (-44, 0),
+                "musketeer": (-43, -3), "giant": (-56, 17)}
+BADGE_TOLERANCE = (15, 16)  # px: further than this from where its own badge would be, a bar is a neighbour's
+
+
 def assign(bars, detections):
-    """{detection index: Bar} - each bar to the unit of its side right under it (a bar of the wrong
-    size for that kind of unit counts against the pair)."""
+    """{detection index: Bar} - each bar to the unit of its side whose badge would be exactly there, with a
+    bar of the right size for that kind of unit (in a crowd, a neighbour's bar is otherwise easily taken)."""
     pairs = []
     for bi, bar in enumerate(bars):
         for di, d in enumerate(detections):
-            if d.team != bar.team or d.is_spell:
+            if d.team != bar.team or d.is_spell or d.cls not in BADGE_OFFSET:
                 continue
-            full = BAR_LENGTH.get(d.cls, bar.length)
-            bx = (bar.badge[0] + bar.badge[2] + full) / 2  # the badge and its bar sit centred over the unit
+            full = BAR_LENGTH[d.cls]
+            if not 0.8 * full <= bar.length <= 1.2 * full:
+                continue
+            ox, oy = BADGE_OFFSET[d.cls]
             x0, y0, x1, y1 = d.box
-            dx = abs((x0 + x1) / 2 - bx)
-            dy = y0 - bar.badge[3]  # box top below the badge bottom
-            size = 0 if bar.length >= 0.85 * full and bar.length <= 1.15 * full else 30
-            if dx < 70 and -45 < dy < 60:
-                pairs.append((dx + abs(dy) + size, bi, di))
+            ddx = abs(bar.badge[0] - ((x0 + x1) / 2 + ox))
+            ddy = abs((y0 - bar.badge[3]) - oy)
+            if ddx <= BADGE_TOLERANCE[0] and ddy <= BADGE_TOLERANCE[1]:
+                pairs.append((ddx + ddy, bi, di))
     pairs.sort()
     used_b, used_d, out = set(), set(), {}
     for _, bi, di in pairs:

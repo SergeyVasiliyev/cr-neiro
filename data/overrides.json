@@ -2,8 +2,19 @@
   "_comment": "Hand-made corrections applied on top of the imported cards.json / towers.json when loading (JSON merge patch). Re-running the importer does not touch this file. Every entry says why. Example: \"cards\": {\"fireball\": {\"_why\": \"...\", \"spell\": {\"projectile_speed\": 15.0}}}",
   "cards": {},
   "towers": {
-    "_why": "Tower HP at level 11 as shown in a real friendly battle (raw/videos/video1.mp4: full towers show 3052 and 4824). Towers do not scale with the card rarity multipliers the importer uses (that gives 3584 / 6144); their table is not in csv_logic. Damage (128 from the importer) is still to verify.",
-    "princess": { "hitpoints": 3052 },
-    "king": { "hitpoints": 4824 }
+    "_why": "Level 11 as in a real friendly battle. HP: full towers show 3052 / 4824 (raw/videos/video1.mp4). Damage 109 per shot: single hits seen on minions' HP bars over 9 recordings are 110-120 HP, none near 128 (the importer's value, scaled like its HP by 3584/3052 = 1.174 too much: 128 / 1.174 = 109). The king tower's 109 is the same table value, not measured on its own. The importer's rarity multipliers do not apply to towers; their table is not in csv_logic. King activation_ms 3500: in raw/videos/video10.mp4 the left princess tower falls at 39.6 s, the king stands up and takes out his cannon, first shot ~43.6 s (3.5 s + its 0.5 s first hit); before that a giant next to it took no damage.",
+    "princess": {
+      "hitpoints": 3052,
+      "attack": {
+        "damage": 109
+      }
+    },
+    "king": {
+      "hitpoints": 4824,
+      "attack": {
+        "damage": 109
+      },
+      "activation_ms": 3500
+    }
   }
 }

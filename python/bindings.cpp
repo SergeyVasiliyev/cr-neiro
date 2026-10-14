@@ -71,7 +71,8 @@ PYBIND11_MODULE(crsim, m) {
         .value("TOWER_DESTROYED", EventType::TowerDestroyed)
         .value("KING_ACTIVATED", EventType::KingActivated)
         .value("OVERTIME_STARTED", EventType::OvertimeStarted)
-        .value("MATCH_ENDED", EventType::MatchEnded);
+        .value("MATCH_ENDED", EventType::MatchEnded)
+        .value("DAMAGE", EventType::Damage);
 
     py::class_<Vec2>(m, "Vec2")
         .def(py::init<>())
@@ -174,6 +175,8 @@ PYBIND11_MODULE(crsim, m) {
         .def_readonly("target", &Entity::target)
         .def_readonly("locked", &Entity::locked)
         .def_readonly("active", &Entity::active)
+        .def_readonly("play", &Entity::play)
+        .def_readonly("unit", &Entity::unit)
         .def_property_readonly("is_building", &Entity::is_building);
     py::class_<Projectile>(m, "Projectile")
         .def_readonly("team", &Projectile::team)
@@ -199,7 +202,10 @@ PYBIND11_MODULE(crsim, m) {
         .def_readonly("type", &Event::type)
         .def_readonly("team", &Event::team)
         .def_readonly("entity", &Event::entity)
-        .def_readonly("info", &Event::info);
+        .def_readonly("info", &Event::info)
+        .def_readonly("pos", &Event::pos)
+        .def_readonly("play", &Event::play)
+        .def_readonly("unit", &Event::unit);
     py::class_<PlayerState>(m, "PlayerState")
         .def_readonly("elixir", &PlayerState::elixir)
         .def_readonly("elixir_leaked", &PlayerState::elixir_leaked)
@@ -229,7 +235,11 @@ PYBIND11_MODULE(crsim, m) {
         .def("twin_move", &Battle::twin_move, py::arg("id"), py::arg("pos"))
         .def("twin_set_hp", &Battle::twin_set_hp, py::arg("id"), py::arg("hp"))
         .def("twin_remove", &Battle::twin_remove, py::arg("id"))
-        .def("twin_spawn", &Battle::twin_spawn, py::arg("team"), py::arg("card_id"), py::arg("pos"))
+        .def("twin_spawn", &Battle::twin_spawn, py::arg("team"), py::arg("card_id"), py::arg("pos"),
+             py::arg("play") = -1, py::arg("unit") = -1)
+        // (No keep_alive: copies would chain each other alive. The GameData must outlive them - the twin keeps it.)
+        .def("clone", [](const Battle& b) { return Battle(b); },
+             "An independent copy of the battle as it is now (the digital twin keeps these to rewind to)")
         .def("set_follow_real", &Battle::set_follow_real, py::arg("on"))
         .def("step", &Battle::step)
         .def("steps", [](Battle& b, int n) { for (int i = 0; i < n && !b.finished(); ++i) b.step(); }, py::arg("n"))
@@ -247,6 +257,7 @@ PYBIND11_MODULE(crsim, m) {
         .def_property_readonly("events", &Battle::events)
         .def("clear_events", &Battle::clear_events)
         .def("set_record_events", &Battle::set_record_events)
+        .def("set_record_damage", &Battle::set_record_damage, py::arg("on"))
         .def("find", &Battle::find, py::return_value_policy::reference_internal, py::arg("id"),
              "Entity by id, or None once it is dead")
         .def("king_tower", &Battle::king_tower)
@@ -291,7 +302,9 @@ PYBIND11_MODULE(crsim, m) {
         .def_readwrite("win", &RewardConfig::win)
         .def_readwrite("crown", &RewardConfig::crown)
         .def_readwrite("tower_damage", &RewardConfig::tower_damage)
-        .def_readwrite("elixir_leak", &RewardConfig::elixir_leak);
+        .def_readwrite("elixir_leak", &RewardConfig::elixir_leak)
+        .def_readwrite("elixir_trade", &RewardConfig::elixir_trade)
+        .def_readwrite("trade_floor", &RewardConfig::trade_floor);
 
     py::class_<BatchEnv>(m, "BatchEnv")
         .def(py::init([](const GameData& data, const std::vector<std::pair<Deck, Deck>>& matchups, int num_envs,
@@ -345,6 +358,7 @@ PYBIND11_MODULE(crsim, m) {
         CRSIM_VIEW(enemy_history_age, n, 2, rl::kHistory)
         CRSIM_VIEW(action_mask, n, 2, rl::kNumActions)
         CRSIM_VIEW(reward, n, 2)
+        CRSIM_VIEW(taken, n, 2)
         CRSIM_VIEW(done, n)
         CRSIM_VIEW(winner, n)
         CRSIM_VIEW(crowns, n, 2)

@@ -68,9 +68,10 @@ def random_decks(data, count, seed=0, supported_only=True):
     return [rng.sample(pool, 8) for _ in range(count)]
 
 
-def make_reward(win=1.0, crown=0.0, tower_damage=0.0, elixir_leak=0.0):
+def make_reward(win=1.0, crown=0.0, tower_damage=0.0, elixir_leak=0.0, elixir_trade=0.0, trade_floor=0.25):
     r = crsim.RewardConfig()
     r.win, r.crown, r.tower_damage, r.elixir_leak = win, crown, tower_damage, elixir_leak
+    r.elixir_trade, r.trade_floor = elixir_trade, trade_floor
     return r
 
 

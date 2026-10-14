@@ -42,6 +42,8 @@ struct Entity {
     bool locked = false;  // in range and attacking `target`; won't retarget until it's lost
     int attack_cd_ms = 0;
     bool active = true;  // king tower sleeps until a princess tower falls or it takes damage
+    int play = -1;       // troops: which of its team's plays (PlayerState::plays index) it came from, -1 = none
+    int unit = -1;       // ... and which unit of that play's group
 
     bool is_building() const { return kind != EntityKind::Troop; }
     bool alive() const { return hp > 0; }
@@ -59,6 +61,7 @@ struct Projectile {
     double pushback = 0.0;  // tiles
     int delay_ms = 0;       // spell waves wait at the king tower before launching
     int card_index = -1;    // spells: CardDef::index
+    std::string source;     // who fired it (card id / tower), for the damage log
     TargetRules targets;
     bool done = false;
 
@@ -72,6 +75,7 @@ enum class EventType : uint8_t {
     KingActivated,
     OvertimeStarted,
     MatchEnded,
+    Damage,  // only with set_record_damage(true): entity = who was hit, info = "<source>:<amount>"
 };
 
 const char* event_name(EventType type);
@@ -82,6 +86,9 @@ struct Event {
     Team team = Team::Blue;
     EntityId entity = kNoEntity;
     std::string info;
+    Vec2 pos;         // deaths: where it died
+    int play = -1;    // deaths of troops: Entity::play / Entity::unit of the one that died
+    int unit = -1;
 };
 
 using Deck = std::array<std::string, kDeckSize>;
@@ -131,8 +138,9 @@ public:
     // moved to the nearest legal spot, and missing elixir is forgiven. Returns the elixir that was
     // missing (0 when the simulator agrees the play was affordable); throws if the card is not in the deck.
     // Without a position (seen played, but not where) only the cycle and the elixir change.
-    // ago_ms: the play happened that long ago (an opponent's unit is only seen once it is on the field),
-    // so its blueprint delay is already partly or fully over.
+    // ago_ms: the play happened that long ago (an opponent's unit is only seen once it is on the field,
+    // a spell once it lands), so its blueprint delay is already partly or fully over - and past that, a
+    // troop's deploy timer has been running and a spell has been flying for the rest.
     double force_play(Team team, const std::string& card_id, std::optional<Vec2> pos, int ago_ms = 0);
     // Digital twin: make the simulated player hold what the screen shows. hand: 4 card ids ("" = empty
     // slot), next: the card shown as next ("" = unknown). The rest of the cycle keeps its simulated order.
@@ -142,7 +150,8 @@ public:
     bool twin_move(EntityId id, Vec2 pos);         // a troop is seen somewhere else
     bool twin_set_hp(EntityId id, int hp);         // a tower (or troop) HP read from the screen
     bool twin_remove(EntityId id);                 // a troop the game no longer has
-    EntityId twin_spawn(Team team, const std::string& card_id, Vec2 pos);  // one unit the simulator missed
+    // One unit the simulator missed (or killed too early): play / unit tag it as that play's unit.
+    EntityId twin_spawn(Team team, const std::string& card_id, Vec2 pos, int play = -1, int unit = -1);
     // Digital twin: the real game decides when the match ends; the copy never finishes on its own
     // (its crowns can be off), it just keeps the clock, the elixir speed and the overtime.
     void set_follow_real(bool on) { follow_real_ = on; }
@@ -169,6 +178,8 @@ public:
     EntityId princess_tower(Team team, int side) const { return towers_[idx(team)].princess[side]; }
 
     void set_record_events(bool on) { record_events_ = on; }
+    // Log every hit as a Damage event (for checking the simulated fighting against recordings).
+    void set_record_damage(bool on) { record_damage_ = on; }
     const std::vector<Event>& events() const { return events_; }
     void clear_events() { events_.clear(); }
 
@@ -184,7 +195,7 @@ private:
     void spawn_towers(Team team);
     void spawn_unit(Team team, const CardDef& card, Vec2 pos, int unit);
     void materialize_pending(int dt);
-    void cast_spell(Team team, const CardDef& card, Vec2 pos);
+    void cast_spell(Team team, const CardDef& card, Vec2 pos, int elapsed_ms = 0);
 
     void regen_elixir(int dt);
     void refill_hands(int dt);
@@ -220,6 +231,8 @@ private:
     std::optional<Team> winner_;
     bool king_destroyed_ = false;
     bool follow_real_ = false;  // digital twin: never finish on our own
+    bool record_damage_ = false;
+    std::string hit_source_;    // who is dealing the damage being applied
 
     std::array<PlayerState, 2> players_;
     std::array<TowerIds, 2> towers_;
