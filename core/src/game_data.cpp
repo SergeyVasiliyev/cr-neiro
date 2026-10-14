@@ -56,6 +56,7 @@ TowerDef parse_tower(const json& j) {
     t.hitpoints = j.at("hitpoints").get<int>();
     t.radius = j.at("radius").get<double>();
     t.footprint = j.value("footprint", t.radius);
+    t.activation_ms = j.value("activation_ms", 0);
     t.attack = parse_attack(j.at("attack"));
     return t;
 }

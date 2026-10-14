@@ -78,6 +78,9 @@ struct TowerDef {
     int hitpoints = 0;
     double radius = 1.0;     // collision radius, tiles
     double footprint = 1.5;  // half side of the square nobody can deploy on, tiles
+    // King tower: after it wakes up (a princess tower fell, or it was hit) the king stands up and takes
+    // out his cannon before the first shot can come.
+    int activation_ms = 0;
     AttackDef attack;
 };
 

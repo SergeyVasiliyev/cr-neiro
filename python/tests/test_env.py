@@ -139,3 +139,17 @@ def test_policy_network_forward(data):
     assert (logits[illegal] < -1e8).all()
     action, _ = net.act(obs_to_torch(env.obs(0), "cpu"))
     assert all(env.obs(0)["action_mask"][i, a] for i, a in enumerate(action.tolist()))
+
+
+def test_elixir_trade_reward(data):
+    """Trades are zero-sum, and a troop's worth goes partly with damage, the rest when it dies."""
+    deck = ce.DEFAULT_DECK
+    env = ce.VecEnv(data, [(deck, deck)], num_envs=8, bots=("heuristic", "heuristic"), decision_ticks=6, seed=5,
+                    reward=ce.make_reward(win=0.0, elixir_trade=1.0, trade_floor=0.25))
+    acts = np.full((8, 2), ce.BOT_ACTION, dtype=np.int32)
+    moved = 0.0
+    for _ in range(400):
+        r, _ = env.step(acts)
+        assert np.allclose(r[:, 0], -r[:, 1])
+        moved += float(np.abs(r).sum())
+    assert moved > 1.0

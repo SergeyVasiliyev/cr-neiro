@@ -94,3 +94,13 @@ def test_arrows_in_pieces_are_one_volley():
     blue = [d for d in merged if d.cls == "arrows" and d.team == "blue"]
     assert len(blue) == 1 and abs(blue[0].tile[1] - 14.83) < 0.01
     assert len(merged) == 3  # one blue volley, one red, the knight
+
+
+def test_side_flicker_keeps_one_track():
+    """A unit read in the other side's colour now and then (low confidence) stays one track of its side."""
+    tr = Tracker()
+    for k in range(20):
+        team, conf = ("blue", 0.6) if k % 5 == 4 else ("red", 0.9)
+        tr.update(k * DT, [Detection("minion", team, conf, (0, 0, 0, 0), (9.0, 20.0 - k * 0.15))])
+    live = [x for x in tr.tracks if x.confirmed]
+    assert len(live) == 1 and live[0].team == "red"

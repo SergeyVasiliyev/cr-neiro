@@ -32,6 +32,7 @@ class Track:
     hits: int = 1
     conf: float = 1.0  # detection confidence when seen, fading while unseen
     history: list = field(default_factory=list)
+    team_votes: dict = field(default_factory=dict)  # side -> summed detection confidence
 
     @property
     def confirmed(self):
@@ -57,6 +58,10 @@ class Track:
 
 
 class Tracker:
+    FLIP_CONF = 0.8      # a detection of the other side's colour below this confidence may be the same unit
+    FLIP_GATE = 0.8      # tiles from the track's prediction
+    FLIP_PENALTY = 0.5   # a same-side match is preferred
+
     def __init__(self, gate=1.6, max_speed=3.0, keep_unseen=1.5, keep_hidden=4.0, keep_spell=0.4):
         self.gate = gate              # tiles: how far a detection may be from a track's prediction
         self.max_speed = max_speed    # tiles/s, widens the gate after a gap
@@ -80,17 +85,24 @@ class Tracker:
 
     def update(self, t, detections):
         """Feeds the detections of one frame taken at time t (seconds); returns the live tracks."""
-        # Greedy matching by distance to each track's predicted position, same class and side only.
+        # Greedy matching by distance to each track's predicted position, same class. The detector now and
+        # then gives a unit the other side's colour for a frame, at low confidence (both-side recordings:
+        # median 0.61 vs 0.90): such a detection right on an established track is that unit, and the
+        # track's side is decided by a vote over its life.
         pairs = []
         for ti, tr in enumerate(self.tracks):
             px, py = tr.predicted(t)
             gate = self.gate + self.max_speed * min(1.0, max(0.0, t - tr.last_seen))
             for di, d in enumerate(detections):
-                if d.cls != tr.cls or d.team != tr.team:
+                if d.cls != tr.cls:
                     continue
                 dist = ((d.tile[0] - px) ** 2 + (d.tile[1] - py) ** 2) ** 0.5
-                if dist <= gate:
-                    pairs.append((dist, ti, di))
+                if d.team == tr.team:
+                    if dist <= gate:
+                        pairs.append((dist, ti, di))
+                elif (tr.hits >= 3 and d.conf < self.FLIP_CONF and dist <= self.FLIP_GATE
+                      and "any" not in (d.team, tr.team)):
+                    pairs.append((dist + self.FLIP_PENALTY, ti, di))
         pairs.sort()
         used_t, used_d = set(), set()
         for dist, ti, di in pairs:
@@ -109,10 +121,13 @@ class Tracker:
             tr.hits += 1
             tr.conf = d.conf
             tr.history.append((t, tr.x, tr.y))
+            tr.team_votes[d.team] = tr.team_votes.get(d.team, 0.0) + d.conf
+            tr.team = max(tr.team_votes, key=tr.team_votes.get)
         for di, d in enumerate(detections):
             if di not in used_d:
                 self.tracks.append(Track(self.next_id, d.cls, d.team, d.tile[0], d.tile[1], first_seen=t,
-                                         last_seen=t, conf=d.conf, history=[(t, *d.tile)]))
+                                         last_seen=t, conf=d.conf, history=[(t, *d.tile)],
+                                         team_votes={d.team: d.conf}))
                 self.next_id += 1
         # Unseen tracks fade, then go.
         alive = []

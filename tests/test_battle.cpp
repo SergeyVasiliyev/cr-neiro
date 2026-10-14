@@ -198,13 +198,9 @@ double crossing_x(Battle& b, EntityId* target_after) {
 void test_lane_after_princess_falls(const GameData& data) {
     Battle b(data, kKnights, kKnights, 1);
     const EntityId right_princess = b.princess_tower(Team::Red, 1);
-    for (int t = 0; t < 4000 && b.find(right_princess); ++t) {
-        if (b.player(Team::Blue).elixir >= 3.0) b.play(Team::Blue, 0, {14.5, 13.5});
-        b.step();
-    }
+    b.twin_set_hp(right_princess, 0);  // knocked down (how does not matter here)
+    b.step();
     CHECK(b.find(right_princess) == nullptr);
-    for (int t = 0; t < 2000 && troop_count(b, Team::Blue) > 0; ++t) b.step();  // let the attackers die
-    CHECK(troop_count(b, Team::Blue) == 0);
 
     run_ms(b, 3000);
     CHECK(b.play(Team::Blue, 0, {15.5, 8.5}));
@@ -540,7 +536,52 @@ void test_spell_tower_damage(const GameData& data) {
     }
 }
 
+void test_king_wakes_up(const GameData& data) {
+    // A fallen princess tower wakes the king, who needs a moment before his first shot.
+    Battle b(data, kMixed, kMixed, 10);
+    b.twin_set_hp(b.princess_tower(Team::Blue, 0), 0);
+    b.step();
+    const Entity* king = b.find(b.king_tower(Team::Blue));
+    CHECK(king && king->active && king->deploy_ms_left > 0);
+    CHECK(std::abs(king->deploy_ms_left + data.rules.tick_ms - data.king_tower.activation_ms) <= data.rules.tick_ms);
+}
+
 }  // namespace
+
+void test_late_seen_plays(const GameData& data) {
+    const Deck starter = {"knight", "archers", "minions", "arrows", "fireball", "giant", "mini_pekka", "musketeer"};
+    const int dt = data.rules.tick_ms;
+    // A troop seen 0.5 s after it appeared (played 1.5 s ago): its deploy timer has run for that long.
+    Battle b(data, starter, starter, 7);
+    b.force_play(Team::Blue, "knight", Vec2{9.0, 10.0}, data.rules.deploy_delay_ms[0] + 500);
+    b.step();
+    int late = -1;
+    for (const auto& e : b.entities()) {
+        if (e.def_id == "knight") late = e.deploy_ms_left;
+    }
+    CHECK(late == std::max(0, data.card("knight").unit.deploy_time_ms - 500 - dt));
+    // A spell seen when it lands: in the simulator it lands now too, not a whole flight later.
+    Battle c(data, starter, starter, 8);
+    const Vec2 spot{9.0, 25.0};
+    const double flight_ms = distance(Vec2{9.0, 3.0}, spot) / data.card("fireball").spell.projectile_speed * 1000.0;
+    c.force_play(Team::Blue, "fireball", spot, data.rules.deploy_delay_ms[0] + static_cast<int>(flight_ms) + 100);
+    c.step();
+    CHECK(c.projectiles().empty());
+    // Arrows seen 1.25 waves into the volley: the first wave further along, the third still waiting.
+    Battle d(data, starter, starter, 9);
+    const int interval = data.card("arrows").spell.wave_interval_ms;
+    const int into = interval + interval / 4;
+    d.force_play(Team::Blue, "arrows", spot, data.rules.deploy_delay_ms[0] + into);
+    d.step();
+    int waiting = 0;
+    double furthest = 0.0;
+    for (const auto& p : d.projectiles()) {
+        if (p.delay_ms > 0) ++waiting;
+        furthest = std::max(furthest, p.pos.y);
+    }
+    CHECK(d.projectiles().size() == 3 && waiting == 1);
+    CHECK(furthest > 3.0 + data.card("arrows").spell.projectile_speed * into / 1000.0 - 0.5);
+}
 
 int main(int argc, char** argv) {
     const std::string data_dir = argc > 1 ? argv[1] : "data";
@@ -577,6 +618,8 @@ int main(int argc, char** argv) {
     test_twin_corrections(data);
     test_follow_real(data);
     test_spell_tower_damage(data);
+    test_king_wakes_up(data);
+    test_late_seen_plays(data);
 
     if (g_failed) {
         std::printf("%d check(s) failed\n", g_failed);

@@ -1,7 +1,7 @@
 """How closely the live simulator copy follows real matches: runs the live code (python/live/session.py)
 over perception caches, with and without the corrections from what is seen.
 
-    .venv\Scripts\python.exe tools\twin_live_eval.py [--caches "raw/perception/cache/video?.json"]
+    .venv\\Scripts\\python.exe tools\\twin_live_eval.py [--caches "raw/perception/cache/video?.json"]
 
 Per match: the share of seen units that have a simulated unit nearby (< 1.5 tiles), the simulated units
 nobody sees (and that are not plausibly hidden), tower HP error, and how many corrections were needed.

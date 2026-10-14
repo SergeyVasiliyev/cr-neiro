@@ -42,6 +42,7 @@ const char* event_name(EventType type) {
     switch (type) {
         case EventType::CardPlayed: return "card_played";
         case EventType::Death: return "death";
+        case EventType::Damage: return "damage";
         case EventType::TowerDestroyed: return "tower_destroyed";
         case EventType::KingActivated: return "king_activated";
         case EventType::OvertimeStarted: return "overtime_started";
@@ -136,8 +137,18 @@ void Battle::materialize_pending(int dt) {
         p.ms_left -= dt;
         if (p.ms_left > 0) continue;
         const CardDef& card = data_.card(data_.card_ids[p.card_index]);
-        if (card.type == CardType::Spell) cast_spell(p.team, card, p.pos);
-        else spawn_unit(p.team, card, p.pos, p.unit);
+        // ms_left below 0: the play was made longer ago than the blueprint lasts (force_play with ago_ms),
+        // and the card has been on the field that long already.
+        const int overdue = -p.ms_left;
+        if (card.type == CardType::Spell) {
+            cast_spell(p.team, card, p.pos, overdue);
+        } else {
+            spawn_unit(p.team, card, p.pos, p.unit);
+            Entity& e = entities_.back();
+            e.deploy_ms_left = std::max(0, e.deploy_ms_left - overdue);
+            e.play = p.play_index;
+            e.unit = p.unit;
+        }
         CardPlay& play = players_[idx(p.team)].plays[p.play_index];
         if (play.reveal_ms < 0) play.reveal_ms = time_ms_;
     }
@@ -266,7 +277,7 @@ double Battle::force_play(Team team, const std::string& card_id, std::optional<V
     const double missing = std::max(0.0, card.elixir - p.elixir);
     const size_t first_new = pending_.size();
     start_play(team, slot, pos);
-    for (size_t i = first_new; i < pending_.size(); ++i) pending_[i].ms_left = std::max(0, pending_[i].ms_left - ago_ms);
+    for (size_t i = first_new; i < pending_.size(); ++i) pending_[i].ms_left -= std::max(0, ago_ms);  // may go below 0
     return missing;
 }
 
@@ -333,11 +344,13 @@ bool Battle::twin_remove(EntityId id) {
     return true;
 }
 
-EntityId Battle::twin_spawn(Team team, const std::string& card_id, Vec2 pos) {
+EntityId Battle::twin_spawn(Team team, const std::string& card_id, Vec2 pos, int play, int unit) {
     const CardDef& card = data_.card(card_id);
     if (card.type != CardType::Troop) throw std::invalid_argument("twin_spawn: " + card_id + " is not a troop");
     spawn_unit(team, card, pos, 0);
     Entity& e = entities_.back();
+    e.play = play;
+    e.unit = unit;
     e.pos = {std::clamp(pos.x, 0.0, data_.arena.width), std::clamp(pos.y, 0.0, data_.arena.height)};
     if (!e.air) keep_out_of_river(e);
     e.deploy_ms_left = 0;  // it was seen walking around: long past its deploy timer
@@ -376,7 +389,7 @@ void Battle::start_play(Team team, int hand_slot, std::optional<Vec2> pos) {
     }
 }
 
-void Battle::cast_spell(Team team, const CardDef& card, Vec2 pos) {
+void Battle::cast_spell(Team team, const CardDef& card, Vec2 pos, int elapsed_ms) {
     const SpellDef& s = card.spell;
     const Vec2 origin = to_absolute(team, data_.arena.king_pos);
     for (int wave = 0; wave < s.waves; ++wave) {
@@ -384,14 +397,22 @@ void Battle::cast_spell(Team team, const CardDef& card, Vec2 pos) {
         p.team = team;
         p.pos = origin;
         p.aim = pos;
+        // Cast elapsed_ms ago: a wave already launched is that much further along (at most at its aim:
+        // it lands in this tick's projectile update).
+        const int flown_ms = elapsed_ms - wave * s.wave_interval_ms;
+        if (flown_ms > 0) {
+            const double d = std::min(distance(origin, pos), s.projectile_speed * flown_ms / 1000.0);
+            p.pos = move_towards(origin, pos, d);
+        }
         p.speed = s.projectile_speed;
         p.damage = s.damage;
         p.tower_damage_pct = s.tower_damage_pct;
         p.splash_radius = s.radius;
         p.pushback = s.pushback;
-        p.delay_ms = wave * s.wave_interval_ms;
+        p.delay_ms = std::max(0, wave * s.wave_interval_ms - elapsed_ms);
         p.card_index = card.index;
         p.targets = s.targets;
+        p.source = card.id;
         projectiles_.push_back(p);
     }
 }
@@ -561,7 +582,7 @@ void Battle::update_troop(Entity& e, int dt) {
 }
 
 void Battle::update_tower(Entity& e, int dt) {
-    if (!e.active) return;
+    if (!e.active || e.deploy_ms_left > 0) return;
     Entity* target = find_mut(e.target);
     if (!(target && can_attack(e, *target) && edge_gap(e, *target) <= e.attack.range)) {
         e.locked = false;
@@ -596,6 +617,7 @@ void Battle::attack_tick(Entity& e, Entity& target, int dt) {
 
 void Battle::fire(Entity& e, Entity& target) {
     const AttackDef& a = e.attack;
+    hit_source_ = e.def_id;
     if (a.projectile_speed <= 0.0) {
         if (a.splash_radius > 0.0) {
             apply_splash(e.team, a.splash_around_self ? e.pos : target.pos, a.splash_radius, a.damage,
@@ -615,6 +637,7 @@ void Battle::fire(Entity& e, Entity& target) {
     p.tower_damage_pct = a.tower_damage_pct;
     p.splash_radius = a.splash_radius;
     p.targets = a.targets;
+    p.source = e.def_id;
     projectiles_.push_back(p);
 }
 
@@ -632,6 +655,7 @@ void Battle::update_projectiles(int dt) {
             continue;
         }
         p.done = true;
+        hit_source_ = p.source;
         if (p.splash_radius > 0.0) {
             apply_splash(p.team, p.aim, p.splash_radius, p.damage, p.tower_damage_pct, p.targets, p.pushback);
         } else if (target && target->alive()) {
@@ -646,6 +670,9 @@ void Battle::apply_damage(Entity& target, int damage, int tower_damage_pct) {
     // (Fireball 688 -> 159, Arrows 122 -> 25 per wave at level 11, as seen in friendly battles).
     if (target.is_building() && tower_damage_pct != 100) damage -= damage * (100 - tower_damage_pct) / 100;
     target.hp -= damage;
+    if (record_damage_ && record_events_) {
+        events_.push_back({time_ms_, EventType::Damage, target.team, target.id, hit_source_ + ":" + std::to_string(damage)});
+    }
     if (target.kind == EntityKind::KingTower && !target.active && target.alive()) activate_king(target);
 }
 
@@ -737,6 +764,7 @@ void Battle::keep_out_of_river(Entity& e) const {
 void Battle::activate_king(Entity& king) {
     if (king.active) return;
     king.active = true;
+    king.deploy_ms_left = data_.king_tower.activation_ms;  // waking up: no shots yet
     log(EventType::KingActivated, king.team, king.id);
 }
 
@@ -744,6 +772,11 @@ void Battle::remove_dead() {
     for (auto& e : entities_) {
         if (e.alive()) continue;
         log(EventType::Death, e.team, e.id, e.def_id);
+        if (record_events_) {
+            events_.back().pos = e.pos;
+            events_.back().play = e.play;
+            events_.back().unit = e.unit;
+        }
         if (e.kind == EntityKind::PrincessTower) {
             players_[idx(opponent(e.team))].crowns += 1;
             log(EventType::TowerDestroyed, e.team, e.id, e.def_id);
@@ -802,7 +835,7 @@ void Battle::finish(std::optional<Team> winner) {
 
 void Battle::log(EventType type, Team team, EntityId entity, std::string info) {
     if (!record_events_) return;
-    events_.push_back({time_ms_, type, team, entity, std::move(info)});
+    events_.push_back({time_ms_, type, team, entity, std::move(info), {}, -1, -1});
 }
 
 }  // namespace cr

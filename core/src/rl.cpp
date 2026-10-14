@@ -1,6 +1,7 @@
 #include "crsim/rl.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -220,6 +221,13 @@ void action_mask(const Battle& b, Team team, uint8_t* out) {
             if (affordable[slot] && (spell[slot] ? spell_ok : troop_ok)) out[1 + slot * kCells + cell] = 1;
         }
     }
+}
+
+int encode_action(const Battle& b, Team team, int slot, Vec2 pos) {
+    const Vec2 own = to_own_frame(b.data().arena, team, pos);
+    const int col = std::clamp(static_cast<int>(std::floor(own.x)), 0, kGridW - 1);
+    const int row = std::clamp(static_cast<int>(std::floor(own.y)), 0, kGridH - 1);
+    return 1 + slot * kCells + row * kGridW + col;
 }
 
 bool apply_action(Battle& b, Team team, int action) {

@@ -6,13 +6,15 @@
 Instance 0 is the blue player (its file is videoN.mp4), instance 1 the red one (videoN_red.mp4); N is
 the next free number. Both windows are grabbed in one loop, so the two recordings share one clock.
 Frames are the window size (9:16); the perception tools bring them to 1080x1920. Windows may be covered
-by others but not minimised. Stop with Ctrl+C (or --minutes).
+by others but not minimised. Stop with Ctrl+C (or --minutes); closing the window also finishes the files.
 """
 import argparse
+import ctypes
 import glob
 import os
 import re
 import sys
+import threading
 import time
 
 import cv2
@@ -31,6 +33,25 @@ def next_name():
     return f"video{max(numbers, default=0) + 1}"
 
 
+def on_window_close(stop, closed):
+    """Closing the console window (instead of Ctrl+C) would kill the recorder before the mp4 files are
+    finished - unreadable (tools/repair_recording.py can save them). Windows gives a closing console a few
+    seconds: stop the loop and wait for the files to be closed."""
+    if os.name != "nt":
+        return None
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
+    def handler(event):
+        if event in (2, 5, 6):  # CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT
+            stop.set()
+            closed.wait(4.5)
+            return True
+        return False  # Ctrl+C: KeyboardInterrupt as usual
+
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(handler, True)
+    return handler  # keep a reference, or it is garbage collected
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--instances", type=int, nargs="+", default=[0, 1])
@@ -47,11 +68,13 @@ def main():
     paths = {i: os.path.join(VIDEOS, f"{name}{SUFFIX.get(i, f'_{i}')}.mp4") for i in args.instances}
     print("recording " + ", ".join(f"LDPlayer {i} -> {os.path.basename(p)}" for i, p in paths.items()) +
           "   (Ctrl+C to stop)", flush=True)
+    stop, closed = threading.Event(), threading.Event()
+    handler = on_window_close(stop, closed)  # noqa: F841
     t0 = time.monotonic()
     written = 0
     grabbed = 0
     try:
-        while time.monotonic() - t0 < args.minutes * 60:
+        while time.monotonic() - t0 < args.minutes * 60 and not stop.is_set():
             for i, screen in screens.items():
                 try:
                     frame = screen.screenshot()
@@ -85,6 +108,7 @@ def main():
             w.release()
         for s in screens.values():
             s.close()
+        closed.set()
     el = time.monotonic() - t0
     print(f"stopped after {el:.0f}s ({grabbed / max(el, 1e-6):.1f} grabs/s): " +
           ", ".join(os.path.basename(p) for p in paths.values()))

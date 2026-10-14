@@ -22,16 +22,33 @@ from live.session import LiveMatch  # noqa: E402
 W, H = 18.0, 32.0
 
 
-def true_plays(red_frames):
-    """The red player's plays from its own recording, in blue's battle time and blue's tiles."""
-    start, _ = twin.battle_start(red_frames)
-    plays = twin.own_plays_from_hand(red_frames)
-    twin.place_own_plays(plays, twin.run_tracker(red_frames))
+def own_plays_timed(frames, data=None, deploy_delay=1.0):
+    """A player's own plays from its recording (its hand), [(battle s, card, pos in its own view)].
+    The hand shows a card leave when the drag starts, a moment before the drop: a troop play's time is
+    taken from its units instead (first seen = the drop + the blueprint second), a spell's from its hit
+    (minus the flight from its king tower) - the moments the simulator has to match."""
+    start, _ = twin.battle_start(frames)
+    tracks = twin.run_tracker(frames)
+    by_id = {tr.id: tr for tr in tracks}
+    plays = twin.own_plays_from_hand(frames)
+    twin.place_own_plays(plays, tracks)
     out = []
     for p in plays:
-        pos = None if p.pos is None else (W - p.pos[0], H - p.pos[1])  # its bottom is blue's top
-        out.append((p.t - start, p.card, pos))
+        t = p.t
+        seen = [by_id[u] for u in p.units if u in by_id]
+        if seen and p.card in twin.SPELL_CARDS and data is not None and p.pos is not None:
+            speed = data.card(p.card).spell.projectile_speed
+            t = min(tr.first_seen for tr in seen) - math.dist(p.pos, twin.KING["blue"]) / speed - deploy_delay
+        elif seen:
+            t = min(tr.first_seen for tr in seen) - deploy_delay
+        out.append((t - start, p.card, p.pos))
     return out
+
+
+def true_plays(red_frames, data=None):
+    """The red player's plays from its own recording, in blue's battle time and blue's tiles."""
+    return [(t, card, None if pos is None else (W - pos[0], H - pos[1]))  # its bottom is blue's top
+            for t, card, pos in own_plays_timed(red_frames, data)]
 
 
 def found_plays(blue_frames, data):
@@ -49,6 +66,29 @@ def found_plays(blue_frames, data):
     return out, m.red_rejected
 
 
+def match_plays(truth, found, dt=2.5, dist=3.0):
+    """Each true play to the closest-in-time found play of the same card (within dt s, and dist tiles when
+    both positions are known). Returns (hits [(t, card, pos, found play)], missed, extra)."""
+    used = set()
+    hits, missed = [], []
+    for t, card, pos in truth:
+        best = None
+        for k, (g, c, q) in enumerate(found):
+            if k in used or c != card or abs(g - t) > dt + (3.0 if card in twin.SPELL_CARDS else 0.0):
+                continue
+            if pos is not None and q is not None and math.dist(pos, q) > dist:
+                continue
+            if best is None or abs(g - t) < abs(found[best][0] - t):
+                best = k
+        if best is None:
+            missed.append((t, card, pos))
+        else:
+            used.add(best)
+            hits.append((t, card, pos, found[best]))
+    extra = [f for k, f in enumerate(found) if k not in used]
+    return hits, missed, extra
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--blue", required=True, help="perception cache of the blue player's recording")
@@ -60,23 +100,7 @@ def main():
     data = load_data()
     truth = true_plays(twin.load_cache(args.red)["frames"])
     found, rejected = found_plays(twin.load_cache(args.blue)["frames"], data)
-    used = set()
-    hits, missed = [], []
-    for t, card, pos in truth:
-        best = None
-        for k, (g, c, q) in enumerate(found):
-            if k in used or c != card or abs(g - t) > args.dt + (3.0 if card in twin.SPELL_CARDS else 0.0):
-                continue
-            if pos is not None and q is not None and math.dist(pos, q) > args.dist:
-                continue
-            if best is None or abs(g - t) < abs(found[best][0] - t):
-                best = k
-        if best is None:
-            missed.append((t, card, pos))
-        else:
-            used.add(best)
-            hits.append((t, card, pos, found[best]))
-    extra = [f for k, f in enumerate(found) if k not in used]
+    hits, missed, extra = match_plays(truth, found, args.dt, args.dist)
 
     fmt = lambda q: "   ?      " if q is None else f"({q[0]:4.1f},{q[1]:4.1f})"  # noqa: E731
     print(f"red really played {len(truth)} cards; the twin found {len(found)}: "

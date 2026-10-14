@@ -32,6 +32,7 @@ BatchEnv::BatchEnv(const GameData& data, BatchEnvConfig cfg) : data_(data), cfg_
     action_mask.resize(p * rl::kNumActions);
     reward.resize(p);
     done.resize(n);
+    taken.assign(p, rl::kNoop);
     winner.assign(n, -1);
     crowns.resize(p);
     episode_steps.resize(n);
@@ -65,6 +66,35 @@ int BatchEnv::tower_hp(const Battle& b, Team team) const {
     return total;
 }
 
+void BatchEnv::elixir_losses(Slot& s, double lost[2]) const {
+    const Battle& b = *s.battle;
+    lost[0] = lost[1] = 0.0;
+    std::unordered_map<EntityId, std::pair<int, double>> now;
+    for (const auto& e : b.entities()) {
+        if (e.is_building() || e.card_index < 0 || e.max_hp <= 0) continue;
+        const CardDef& card = data_.card(data_.card_ids[e.card_index]);
+        const double full = static_cast<double>(card.elixir) / std::max(1, card.count);
+        const double floor = cfg_.reward.trade_floor;
+        const double worth = full * (floor + (1.0 - floor) * std::max(0, e.hp) / e.max_hp);
+        const int side = idx(e.team);
+        now[e.id] = {side, worth};
+        auto it = s.troop_worth.find(e.id);
+        if (it != s.troop_worth.end()) lost[side] += std::max(0.0, it->second.second - worth);
+    }
+    for (const auto& [id, tw] : s.troop_worth) {
+        if (!now.count(id)) lost[tw.first] += tw.second;  // died
+    }
+    s.troop_worth = std::move(now);
+    for (int side = 0; side < 2; ++side) {
+        const auto& plays = b.player(static_cast<Team>(side)).plays;
+        for (size_t k = s.plays_counted[side]; k < plays.size(); ++k) {
+            const CardDef& card = data_.card(data_.card_ids[plays[k].card_index]);
+            if (card.type == CardType::Spell) lost[side] += card.elixir;
+        }
+        s.plays_counted[side] = plays.size();
+    }
+}
+
 void BatchEnv::reset_slot(int i) {
     Slot& s = slots_[i];
     s.matchup = static_cast<int>(s.rng() % cfg_.matchups.size());
@@ -77,7 +107,9 @@ void BatchEnv::reset_slot(int i) {
         s.tower_hp[side] = tower_hp(*s.battle, static_cast<Team>(side));
         s.crowns[side] = 0;
         s.leaked[side] = 0.0;
+        s.plays_counted[side] = 0;
     }
+    s.troop_worth.clear();
     matchup[i] = s.matchup;
 }
 
@@ -116,13 +148,20 @@ void BatchEnv::step_slot(int i, const int32_t* actions) {
     for (int side = 0; side < 2; ++side) {
         const Team team = static_cast<Team>(side);
         const int32_t a = actions[2 * i + side];
-        if (a != kBotAction) rl::apply_action(b, team, a);
-        else if (bot_moves[side]) b.play(team, bot_moves[side]->hand_slot, bot_moves[side]->pos);
+        taken[2 * i + side] = rl::kNoop;
+        if (a != kBotAction) {
+            if (rl::apply_action(b, team, a)) taken[2 * i + side] = a;
+        } else if (bot_moves[side]) {
+            const int move = rl::encode_action(b, team, bot_moves[side]->hand_slot, bot_moves[side]->pos);
+            if (b.play(team, bot_moves[side]->hand_slot, bot_moves[side]->pos)) taken[2 * i + side] = move;
+        }
     }
     for (int t = 0; t < cfg_.decision_ticks && !b.finished(); ++t) b.step();
     ++s.steps;
 
     const RewardConfig& rc = cfg_.reward;
+    double lost[2] = {0.0, 0.0};
+    if (rc.elixir_trade != 0.0) elixir_losses(s, lost);
     int hp[2];
     for (int side = 0; side < 2; ++side) hp[side] = tower_hp(b, static_cast<Team>(side));
     for (int side = 0; side < 2; ++side) {
@@ -135,6 +174,7 @@ void BatchEnv::step_slot(int i, const int32_t* actions) {
         r += rc.tower_damage * (dealt - taken) / full_tower_hp_;
         r += rc.crown * ((me.crowns - s.crowns[side]) - (b.player(opponent(team)).crowns - s.crowns[other]));
         r -= rc.elixir_leak * (me.elixir_leaked - s.leaked[side]);
+        r += rc.elixir_trade * (lost[other] - lost[side]);
         if (b.finished()) {
             const auto w = b.winner();
             if (w) r += *w == team ? rc.win : -rc.win;

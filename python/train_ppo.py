@@ -54,6 +54,10 @@ def parse_args():
     p.add_argument("--reward-tower", type=float, default=0.5, help="per full side of tower HP dealt/taken")
     p.add_argument("--reward-crown", type=float, default=0.1)
     p.add_argument("--reward-leak", type=float, default=0.0, help="penalty per wasted elixir")
+    p.add_argument("--reward-trade", type=float, default=0.0,
+                   help="per elixir of the opponent's troops lost (and spells cast) minus our own")
+    p.add_argument("--trade-floor", type=float, default=0.25,
+                   help="share of a troop's worth that only its death takes (damage takes the rest)")
     p.add_argument("--snapshot-every", type=int, default=25, help="iterations between self-play snapshots")
     p.add_argument("--save-every", type=int, default=20, help="iterations between checkpoints")
     p.add_argument("--resume", default=None, help="checkpoint to continue from")
@@ -123,7 +127,8 @@ def main():
 
     data = ce.load_data(args.data)
     matchups, decks = build_matchups(args, data)
-    reward = ce.make_reward(args.reward_win, args.reward_crown, args.reward_tower, args.reward_leak)
+    reward = ce.make_reward(args.reward_win, args.reward_crown, args.reward_tower, args.reward_leak,
+                            args.reward_trade, args.trade_floor)
     groups = [Group(name, n, data, matchups, args, reward, args.seed * 100 + i)
               for i, (name, n) in enumerate(parse_opponents(args.opponent, args.envs))]
     n_envs = sum(g.n for g in groups)
