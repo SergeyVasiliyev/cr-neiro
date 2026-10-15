@@ -76,7 +76,7 @@ def main():
             "towers": {k: [v[0], v[1]] for k, v in seen["towers"].items()},
             "det": [[d.cls, d.team, round(d.conf, 3), *(round(v, 1) for v in d.box),
                      round(d.tile[0], 2), round(d.tile[1], 2)] for d in dets],
-            "bars": [[b.team, *b.badge, b.length, b.filled] for b in hp_reader.bars(frame)],
+            "bars": [[b.team, *b.badge, b.length, b.filled] for b in hp_reader.bars(frame, dets)],
         })
         if len(frames) % 200 == 0:
             rate = len(frames) / (time.time() - started)

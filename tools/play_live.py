@@ -12,6 +12,7 @@ import argparse
 import os
 import sys
 import time
+import traceback
 
 import cv2
 import numpy as np
@@ -26,7 +27,7 @@ from live.session import BLUE, LiveMatch  # noqa: E402
 from perception.layout import Layout  # noqa: E402
 from perception.reader import ScreenReader  # noqa: E402
 
-COLORS = {"blue": (255, 140, 40), "red": (40, 40, 255)}
+COLORS = {"blue": (255, 140, 40), "red": (40, 40, 255), "any": (0, 220, 255)}  # any: a spell hit (no side)
 
 
 # --- brains: simulated battle -> (hand slot, position) or None -------------------------------------
@@ -45,11 +46,12 @@ class PolicyBrain:
         from model import PolicyPlayer, load_policy
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        net, _ = load_policy(path, device)
+        net, ckpt = load_policy(path, device)
         self.player = PolicyPlayer(net, device, greedy=True)
+        self.key_spots = bool(ckpt.get("key_spots", False))  # the action space it was trained with
 
     def __call__(self, battle):
-        action = int(self.player(crsim.rl.encode(battle, BLUE)))
+        action = int(self.player(crsim.rl.encode(battle, BLUE, key_spots=self.key_spots)))
         if action == 0:
             return None
         slot, cell = divmod(action - 1, crsim.rl.CELLS)
@@ -87,8 +89,8 @@ def draw(frame, match, detections, status, last_move, events):
     L = Layout.for_frame(img)
     for d in detections:
         x0, y0, x1, y1 = map(int, d.box)
-        cv2.rectangle(img, (x0, y0), (x1, y1), COLORS[d.team], 2)
-        label(img, NAMES.get(d.cls, d.cls), x0, y0 - 6, COLORS[d.team], 0.75)
+        cv2.rectangle(img, (x0, y0), (x1, y1), COLORS.get(d.team, COLORS["any"]), 2)
+        label(img, NAMES.get(d.cls, d.cls), x0, y0 - 6, COLORS.get(d.team, COLORS["any"]), 0.75)
     if match.battle is not None:
         for e in match.battle.entities:
             if e.is_building:
@@ -177,12 +179,29 @@ def check(device, screen, reader):
     print(f"saved {path}")
 
 
+class Tee:
+    """Writes to the console and to a log file (what happened stays when the window is closed)."""
+
+    def __init__(self, stream, path):
+        self.stream, self.file = stream, open(path, "a", encoding="utf-8", buffering=1)
+
+    def write(self, text):
+        self.stream.write(text)
+        self.file.write(text)
+
+    def flush(self):
+        self.stream.flush()
+        self.file.flush()
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--check", action="store_true", help="test the connection and exit")
     p.add_argument("--brain", default="none", help="none | heuristic | path to a policy checkpoint (.pt)")
     p.add_argument("--act", action="store_true", help="really touch the screen (default: only show)")
-    p.add_argument("--method", default="drag", choices=("drag", "tap"), help="how to put a card down")
+    p.add_argument("--method", default="tap", choices=("tap", "drag"),
+                   help="how to put a card down: tap the card then the spot (exact), or drag it (lands short)")
+    p.add_argument("--preview-every", type=int, default=3, help="draw the preview window every N frames")
     p.add_argument("--decide-every", type=float, default=0.3, help="seconds between brain decisions")
     p.add_argument("--no-detector", action="store_true", help="no unit detection (the opponent stays invisible)")
     p.add_argument("--weights", default=None, help="unit detector weights (default: the latest)")
@@ -196,6 +215,11 @@ def main():
     p.add_argument("--video-start", type=float, default=0.0)
     p.add_argument("--no-window", action="store_true")
     args = p.parse_args()
+    if not args.check:
+        os.makedirs(os.path.join(ROOT, "raw", "live_logs"), exist_ok=True)
+        path = os.path.join(ROOT, "raw", "live_logs", time.strftime("live_%Y%m%d_%H%M%S.txt"))
+        sys.stdout, sys.stderr = Tee(sys.stdout, path), Tee(sys.stderr, path)
+        print(f"log: {path}")
 
     if args.video:
         screen = device = VideoScreen(args.video, args.video_start)
@@ -223,6 +247,9 @@ def main():
     last_move = None
     events = []  # latest events for the preview
     frames, fps_t0, fps = 0, time.monotonic(), 0.0
+    errors = 0
+    last_refusal = None
+    loop_no = 0
     print(f"brain: {args.brain}, {'PLAYING' if playing else 'watching only (no --act)'}; P = pause, Q = quit")
     try:
         while True:
@@ -234,56 +261,76 @@ def main():
                     print(f"{err}; using ADB screenshots (slow) until the window is back")
                     warned = True
                 frame = device.screenshot()
-            frame = full_size(frame)
-            t = time.monotonic()
             try:
-                seen = reader.read(frame)
-            except ValueError:
+                frame = full_size(frame)
+                t = time.monotonic()
+                try:
+                    seen = reader.read(frame)
+                except ValueError:
+                    continue
+                detections = detector.detect(frame) if detector else []
+                match.update(t, seen, detections, hp_reader.bars(frame, detections) if detector else None)
+                frames += 1
+                if t - fps_t0 > 2.0:
+                    fps, frames, fps_t0 = frames / (t - fps_t0), 0, t
+
+                g = match.game_time(t)
+                battle = match.battle
+                if battle is not None and brain is not None and t >= next_decision and g is not None and g >= 0:
+                    next_decision = t + args.decide_every
+                    move = brain(battle)
+                    if move is not None:
+                        slot, pos = move
+                        card = battle.player(BLUE).hand[slot]
+                        real = seen["hand"][slot]
+                        cost = data.card(card).elixir if card else 99
+                        elixir = seen.get("elixir")  # None: not readable this frame - wait for the next one
+                        why_not = ("the slot is empty in the simulator" if not card else
+                                   f"the screen shows {real['card'] or 'nothing'} there"
+                                   if real["unknown"] or real["card"] != card
+                                   else "elixir not readable" if elixir is None
+                                   else f"elixir {elixir:.1f} < {cost}" if elixir + 0.05 < cost else None)
+                        if why_not and (card, why_not) != last_refusal:  # (once per reason, not every 0.3 s)
+                            print(f"{g:6.1f}s  bot wants {card} at ({pos[0]:.1f}, {pos[1]:.1f}), not played: {why_not}")
+                        last_refusal = (card, why_not) if why_not else None
+                        if not why_not:
+                            last_move = (card, pos)
+                            if playing:
+                                device.play_card(slot, pos, args.method)
+                                match.own_play(t, card, pos)
+                            text = f"{'bot plays' if playing else 'bot would play'} {card} at ({pos[0]:.1f}, {pos[1]:.1f})"
+                            print(f"{g:6.1f}s  {text}")
+                            if playing or not events or not events[-1].endswith(text):
+                                events.append(f"{g:5.1f}s {text}")
+                for gt, text in match.log:
+                    print(f"{gt:6.1f}s  {text}")
+                    events.append(f"{gt:5.1f}s {text}")
+                match.log.clear()
+                del events[:-40]
+                if t >= next_status:
+                    next_status = t + 5.0
+                    hand = [h["card"] if not h["unknown"] else "?" for h in seen["hand"]]
+                    when = f"game {g:5.1f}s" if g is not None else "no battle"
+                    units = sum(1 for e in battle.entities if not e.is_building) if battle is not None else 0
+                    print(f"[{fps:4.1f} fps] {when}  elixir {seen['elixir']:.1f}  hand {hand}  units in sim {units}")
+
+            except Exception:  # one bad frame must not stop the bot in the middle of a battle
+                errors += 1
+                print(f"error in this frame ({errors} in a row), carrying on:\n{traceback.format_exc()}")
+                if errors > 100:
+                    raise
                 continue
-            detections = detector.detect(frame) if detector else []
-            match.update(t, seen, detections, hp_reader.bars(frame) if detector else None)
-            frames += 1
-            if t - fps_t0 > 2.0:
-                fps, frames, fps_t0 = frames / (t - fps_t0), 0, t
+            errors = 0
 
-            g = match.game_time(t)
-            battle = match.battle
-            if battle is not None and brain is not None and t >= next_decision and g is not None and g >= 0:
-                next_decision = t + args.decide_every
-                move = brain(battle)
-                if move is not None:
-                    slot, pos = move
-                    card = battle.player(BLUE).hand[slot]
-                    real = seen["hand"][slot]
-                    cost = data.card(card).elixir if card else 99
-                    elixir = seen.get("elixir")  # None: not readable this frame - wait for the next one
-                    if card and real["card"] == card and not real["unknown"] and elixir is not None \
-                            and elixir + 0.05 >= cost:
-                        last_move = (card, pos)
-                        if playing:
-                            device.play_card(slot, pos, args.method)
-                            match.own_play(t, card, pos)
-                        text = f"{'bot plays' if playing else 'bot would play'} {card} at ({pos[0]:.1f}, {pos[1]:.1f})"
-                        print(f"{g:6.1f}s  {text}")
-                        if playing or not events or not events[-1].endswith(text):
-                            events.append(f"{g:5.1f}s {text}")
-            for gt, text in match.log:
-                print(f"{gt:6.1f}s  {text}")
-                events.append(f"{gt:5.1f}s {text}")
-            match.log.clear()
-            del events[:-40]
-            if t >= next_status:
-                next_status = t + 5.0
-                hand = [h["card"] if not h["unknown"] else "?" for h in seen["hand"]]
-                when = f"game {g:5.1f}s" if g is not None else "no battle"
-                units = sum(1 for e in battle.entities if not e.is_building) if battle is not None else 0
-                print(f"[{fps:4.1f} fps] {when}  elixir {seen['elixir']:.1f}  hand {hand}  units in sim {units}")
-
-            if not args.no_window:
+            loop_no += 1
+            if not args.no_window and loop_no % max(1, args.preview_every) == 0:  # (drawing costs frame rate)
                 status = [f"{fps:.1f} fps  game {g:.1f}s" if g is not None else f"{fps:.1f} fps  waiting for a battle",
                           f"elixir {seen['elixir']:.1f}  " + ("PLAYING" if playing else "watching") +
                           f"  brain {args.brain}"]
-                cv2.imshow("cr-neiro live", draw(frame, match, detections, status, last_move, events))
+                try:  # the preview is only for us to watch: a drawing error must not stop the bot
+                    cv2.imshow("cr-neiro live", draw(frame, match, detections, status, last_move, events))
+                except Exception:
+                    print(f"preview error, skipped:\n{traceback.format_exc()}")
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break

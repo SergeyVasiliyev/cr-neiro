@@ -35,7 +35,7 @@ OBS_KEYS = ("global", "entities", "entity_token", "entity_mask", "hand", "enemy_
             "action_mask")
 # The starter deck every new player gets.
 DEFAULT_DECK = ["knight", "archers", "minions", "arrows", "fireball", "giant", "mini_pekka", "musketeer"]
-BOT_KINDS = ("noop", "random", "heuristic")
+BOT_KINDS = ("noop", "random", "heuristic", "pusher")
 
 NUM_ACTIONS = crsim.rl.NUM_ACTIONS
 CELLS = crsim.rl.CELLS
@@ -99,13 +99,14 @@ class VecEnv:
     """
 
     def __init__(self, data, matchups, num_envs=64, bots=("heuristic", "heuristic"), decision_ticks=10,
-                 seed=0, reward=None, observe_enemy_elixir=True, num_threads=0, auto_reset=True):
+                 seed=0, reward=None, observe_enemy_elixir=True, num_threads=0, auto_reset=True, key_spots=False):
         self.data = data
         self.matchups = [(list(b), list(r)) for b, r in matchups]
         self.env = crsim.BatchEnv(
             data, self.matchups, num_envs=num_envs, decision_ticks=decision_ticks, seed=seed,
             blue_bot=bots[0], red_bot=bots[1], observe_enemy_elixir=observe_enemy_elixir,
-            reward=reward or make_reward(), num_threads=num_threads, auto_reset=auto_reset)
+            reward=reward or make_reward(), num_threads=num_threads, auto_reset=auto_reset, key_spots=key_spots)
+        self.key_spots = key_spots
         self.num_envs = num_envs
         self.decision_ticks = decision_ticks
 

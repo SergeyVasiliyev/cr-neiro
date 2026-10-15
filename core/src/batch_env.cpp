@@ -127,7 +127,9 @@ void BatchEnv::write_obs(int i) {
             enemy_history_age.data() + p * rl::kHistory,
             action_mask.data() + p * rl::kNumActions,
         };
-        rl::encode(b, static_cast<Team>(side), cfg_.obs, view);
+        rl::ObsConfig obs = cfg_.obs;
+        obs.key_spots = cfg_.key_spots[side];
+        rl::encode(b, static_cast<Team>(side), obs, view);
     }
 }
 

@@ -103,7 +103,7 @@ class LiveMatch:
         self.own_lock_until = 0.0  # just played: the screen lags behind our own play
         self.last_hand = [None] * 4  # last readable card in each slot
         self.empty_since = [None] * 4  # (time a slot first read empty, the card that was there)
-        self.manual = []         # our plays made by hand (not by the bot): [card, time], waiting for a position
+        self.manual = []         # our plays waiting to be placed: [card, time, the bot's Play or None (by hand)]
         self.own_units = set()   # blue track ids already given to one of our plays
         self.own_spells = []     # (card, pos, game s) of our spells: explosions there and then are ours
         self.sim_seen = {}       # unit key -> last time a real unit matched it
@@ -180,6 +180,27 @@ class LiveMatch:
         self.plays.append(p)
         self._record(p)
         return p
+
+    def revise_play(self, play, g, pos, units=None):
+        """A play happened at another time or place than first recorded: moved in the journal, replayed."""
+        old = play.g
+        i = self.journal.index(play)
+        del self.journal[i], self.journal_g[i]
+        if i < self.next_ev:
+            self.next_ev -= 1
+        play.g, play.pos = g, None if pos is None else tuple(pos)
+        if units is not None:
+            play.units = list(units)
+        j = bisect.bisect_right(self.journal_g, g)
+        self.journal.insert(j, play)
+        self.journal_g.insert(j, g)
+        if j < self.next_ev:
+            self.next_ev += 1
+        if min(old, g) < self.now - 1e-9:
+            self._rewind(min(old, g))
+        elif j == self.next_ev and g <= self.now + 1e-9:
+            self._apply(play)
+            self.next_ev += 1
 
     def take_back(self, play, why):
         """A play that wasn't one: out of the journal, the simulator replayed without it."""
@@ -684,7 +705,7 @@ class LiveMatch:
                     self.empty_since[slot] = (t, self.last_hand[slot])
                 since = self.empty_since[slot]
                 if since is not None and t - since[0] >= twin.EMPTY_FOR:  # not a one-frame misread
-                    self.manual.append([since[1], since[0]])
+                    self.manual.append([since[1], since[0], None])
                     self.empty_since[slot] = None
                     self.last_hand[slot] = None
             else:
@@ -694,12 +715,15 @@ class LiveMatch:
 
     def _place_manual_plays(self, t, g):
         """Our hand-made plays go into the journal once their units (or spell hit) are seen - at the moment
-        they were really made: the simulator goes back and plays them from there."""
+        they were really made: the simulator goes back and plays them from there. The bot's own plays are
+        in the journal from the moment it decided, where it aimed: once their units are seen, the play is
+        corrected to when and where the card really came down (touches land late and a little off)."""
         for play in list(self.manual):
-            card, t0 = play
+            card, t0, bot_play = play
             if t - t0 > 6.0:
                 self.manual.remove(play)  # never seen where: the hand sync already cycled it
-                self.log.append((g, f"blue {card}: played by hand, position not found"))
+                if bot_play is None:
+                    self.log.append((g, f"blue {card}: played by hand, position not found"))
                 continue
             if card in twin.SPELL_CARDS:
                 # Its explosion, whatever the detector calls it (a fireball's is taken for arrows' now and then):
@@ -731,6 +755,12 @@ class LiveMatch:
                 speed = self.data.card(card).spell.projectile_speed
                 played -= math.dist(pos, twin.KING["blue"]) / speed if speed > 0 else 0.0
             gp = g - (t - played)
+            if bot_play is not None:
+                aimed, decided = bot_play.pos, bot_play.g
+                self.revise_play(bot_play, gp, pos, [tr.id for tr in new])
+                self.log.append((g, f"blue {card} came down at ({pos[0]:.1f}, {pos[1]:.1f}), "
+                                    f"{math.dist(pos, aimed):.1f} tiles from where aimed, {gp - decided:+.1f}s"))
+                continue
             if card in twin.SPELL_CARDS:  # the next waves' hits are ours too
                 self.own_spells.append((card, pos, gp))
             self.add_play("blue", card, gp, pos, "hand", 1.0, [tr.id for tr in new], accepted_at=t)
@@ -870,7 +900,8 @@ class LiveMatch:
         g = self.game_time(t)
         if g is None or self.battle is None:
             return
-        self.add_play("blue", card, max(g, self.now), pos, "bot", 1.0, accepted_at=t)
+        play = self.add_play("blue", card, max(g, self.now), pos, "bot", 1.0, accepted_at=t)
+        self.manual.append([card, t, play])  # to be corrected once its units are seen
         self.own_lock_until = t + lock
         if card in twin.SPELL_CARDS:
             self.own_spells.append((card, tuple(pos), g))

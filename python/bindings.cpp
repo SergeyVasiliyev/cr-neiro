@@ -25,7 +25,7 @@ BotKind bot_from(const py::handle& h) {
 }
 
 // Encodes one player's observation of a single Battle into fresh numpy arrays.
-py::dict encode_battle(const Battle& b, Team team, bool observe_enemy_elixir) {
+py::dict encode_battle(const Battle& b, Team team, bool observe_enemy_elixir, bool key_spots) {
     py::array_t<float> global(rl::kGlobalFeatures);
     py::array_t<float> entities({rl::kMaxEntities, rl::kEntityFeatures});
     py::array_t<int32_t> token(rl::kMaxEntities);
@@ -36,6 +36,7 @@ py::dict encode_battle(const Battle& b, Team team, bool observe_enemy_elixir) {
     py::array_t<uint8_t> amask(rl::kNumActions);
     rl::ObsConfig cfg;
     cfg.observe_enemy_elixir = observe_enemy_elixir;
+    cfg.key_spots = key_spots;
     rl::encode(b, team, cfg,
                {global.mutable_data(), entities.mutable_data(), token.mutable_data(), mask.mutable_data(),
                 hand.mutable_data(), history.mutable_data(), history_age.mutable_data(), amask.mutable_data()});
@@ -293,7 +294,16 @@ PYBIND11_MODULE(crsim, m) {
     rl_mod.attr("HISTORY") = rl::kHistory;
     rl_mod.attr("FIRST_CARD_TOKEN") = rl::kFirstCardToken;
     rl_mod.def("vocab_size", &rl::vocab_size, py::arg("data"));
-    rl_mod.def("encode", &encode_battle, py::arg("battle"), py::arg("team"), py::arg("observe_enemy_elixir") = true);
+    rl_mod.def("encode", &encode_battle, py::arg("battle"), py::arg("team"), py::arg("observe_enemy_elixir") = true,
+               py::arg("key_spots") = false);
+    rl_mod.def(
+        "key_spot_cells",
+        [](const Battle& b, Team team) {
+            std::vector<int> troops, spells;
+            rl::key_spot_cells(b, team, troops, spells);
+            return py::make_tuple(troops, spells);
+        },
+        py::arg("battle"), py::arg("team"), "(troop cells, spell cells): the key spots, own frame");
     rl_mod.def("apply_action", &rl::apply_action, py::arg("battle"), py::arg("team"), py::arg("action"));
     rl_mod.def("cell_position", &rl::cell_position, py::arg("battle"), py::arg("team"), py::arg("cell"));
 
@@ -309,7 +319,8 @@ PYBIND11_MODULE(crsim, m) {
     py::class_<BatchEnv>(m, "BatchEnv")
         .def(py::init([](const GameData& data, const std::vector<std::pair<Deck, Deck>>& matchups, int num_envs,
                          int decision_ticks, uint64_t seed, const py::handle& blue_bot, const py::handle& red_bot,
-                         bool observe_enemy_elixir, const RewardConfig& reward, int num_threads, bool auto_reset) {
+                         bool observe_enemy_elixir, const RewardConfig& reward, int num_threads, bool auto_reset,
+                         const py::object& key_spots) {
                  BatchEnvConfig cfg;
                  cfg.num_envs = num_envs;
                  cfg.num_threads = num_threads;
@@ -320,13 +331,20 @@ PYBIND11_MODULE(crsim, m) {
                  cfg.bots[0] = bot_from(blue_bot);
                  cfg.bots[1] = bot_from(red_bot);
                  cfg.obs.observe_enemy_elixir = observe_enemy_elixir;
+                 if (py::isinstance<py::bool_>(key_spots)) {  // one setting for both sides, or (blue, red)
+                     cfg.key_spots[0] = cfg.key_spots[1] = key_spots.cast<bool>();
+                 } else {
+                     const auto both = key_spots.cast<std::pair<bool, bool>>();
+                     cfg.key_spots[0] = both.first;
+                     cfg.key_spots[1] = both.second;
+                 }
                  cfg.reward = reward;
                  return std::make_unique<BatchEnv>(data, std::move(cfg));
              }),
              py::arg("data"), py::arg("matchups"), py::arg("num_envs") = 1, py::arg("decision_ticks") = 10,
              py::arg("seed") = 0, py::arg("blue_bot") = "heuristic", py::arg("red_bot") = "heuristic",
              py::arg("observe_enemy_elixir") = true, py::arg("reward") = RewardConfig{}, py::arg("num_threads") = 0,
-             py::arg("auto_reset") = true)
+             py::arg("auto_reset") = true, py::arg("key_spots") = false)
         .def("reset", &BatchEnv::reset)
         .def("reset_env", &BatchEnv::reset_env, py::arg("env"))
         .def(

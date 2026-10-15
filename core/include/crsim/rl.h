@@ -4,6 +4,7 @@
 // Everything is expressed in the acting player's own frame (their side at the bottom),
 // so one policy can play either side.
 #include <cstdint>
+#include <vector>
 
 #include "crsim/battle.h"
 
@@ -34,6 +35,8 @@ struct ObsConfig {
     // Not shown in the game, but computable from what is visible: the opponent's elixir as if their
     // cards still waiting as blueprints (hidden from us) had not been played yet.
     bool observe_enemy_elixir = true;
+    // Only key spots are legal (key_spot_cells): ~30 per troop card, a few per spell, instead of every tile.
+    bool key_spots = false;
 };
 
 // Caller-owned buffers for one player's observation.
@@ -52,7 +55,12 @@ struct ObsView {
 void check_arena(const GameData& data);
 
 void encode(const Battle& battle, Team team, const ObsConfig& cfg, const ObsView& out);
-void action_mask(const Battle& battle, Team team, uint8_t* out);
+void action_mask(const Battle& battle, Team team, uint8_t* out, bool key_spots = false);
+// The spots a player would really use (cells, own frame): for troops - behind the king and the princess
+// towers, the back corners, the bridges, the middle at a few depths, in front of the towers, the pockets
+// of fallen enemy towers, and on / in front of the enemy troop deepest in our half; for spells - the enemy
+// towers, the two densest groups of enemy troops, and that deepest troop.
+void key_spot_cells(const Battle& battle, Team team, std::vector<int>& troop_cells, std::vector<int>& spell_cells);
 
 // Absolute arena position of the center of an own-frame grid cell.
 Vec2 cell_position(const Battle& battle, Team team, int cell);

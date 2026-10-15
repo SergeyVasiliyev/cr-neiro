@@ -189,7 +189,7 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
         out.entity_mask[i] = 1;
     }
 
-    if (out.action_mask) action_mask(b, team, out.action_mask);
+    if (out.action_mask) action_mask(b, team, out.action_mask, cfg.key_spots);
 }
 
 Vec2 cell_position(const Battle& b, Team team, int cell) {
@@ -197,7 +197,101 @@ Vec2 cell_position(const Battle& b, Team team, int cell) {
     return from_own_frame(b.data().arena, team, own);
 }
 
-void action_mask(const Battle& b, Team team, uint8_t* out) {
+namespace {
+
+// Troop key spots, own frame, as cells (col, row) on the right side; each is also used mirrored on the left.
+constexpr int kTroopSpots[][2] = {
+    {14, 4},   // right behind the princess tower
+    {17, 0},   // the back corner
+    {9, 0},    // behind the king, right of the middle (walks the right lane)
+    {11, 0},   // the back row beside the king
+    {14, 14},  // the bridge
+    {13, 14},  // the bridge, inner side
+    {14, 12},  // just behind the bridge
+    {14, 9},   // in front of the princess tower
+    {16, 7},   // right beside the princess tower, outer side (a little forward of its middle)
+    {12, 7},   // right beside the princess tower, inner side
+    {11, 8},   // between the king and the princess tower (pulls attackers to the middle)
+    {12, 11},  // mid-field
+    {9, 13},   // the middle, near the river
+    {9, 11},   // the middle
+    {9, 9},    // the middle, lower
+    {9, 7},    // the middle, in front of the king
+    {14, 18},  // the pocket of a fallen enemy princess tower
+    {14, 20},  // deeper in the pocket
+    {17, 20},  // the far corner of the pocket (by the side wall)
+};
+
+int cell_at(Vec2 own) {
+    const int col = std::clamp(static_cast<int>(std::floor(own.x)), 0, kGridW - 1);
+    const int row = std::clamp(static_cast<int>(std::floor(own.y)), 0, kGridH - 1);
+    return row * kGridW + col;
+}
+
+}  // namespace
+
+void key_spot_cells(const Battle& b, Team team, std::vector<int>& troops, std::vector<int>& spells) {
+    const ArenaDef& a = b.data().arena;
+    troops.clear();
+    spells.clear();
+    for (const auto& s : kTroopSpots) {
+        troops.push_back(s[1] * kGridW + s[0]);
+        troops.push_back(s[1] * kGridW + (kGridW - 1 - s[0]));
+    }
+    // The enemy troop deepest into our half (or about to cross): meet it there, or a little before it.
+    const Entity* deepest = nullptr;
+    double deepest_y = a.river_max_y + 3.0;
+    std::vector<std::pair<Vec2, double>> enemy;  // own-frame position, worth (elixir of its card per unit)
+    for (const auto& e : b.entities()) {
+        if (e.team == team || e.is_building()) continue;
+        const Vec2 p = to_own_frame(a, team, e.pos);
+        double worth = 1.0;
+        if (e.card_index >= 0) {
+            const CardDef& card = b.data().card(b.data().card_ids[e.card_index]);
+            worth = static_cast<double>(card.elixir) / std::max(1, card.count);
+        }
+        enemy.push_back({p, worth});
+        if (p.y < deepest_y) {
+            deepest = &e;
+            deepest_y = p.y;
+        }
+    }
+    if (deepest) {
+        const Vec2 p = to_own_frame(a, team, deepest->pos);
+        const double top = a.river_min_y - 0.5;
+        troops.push_back(cell_at({p.x, std::min(p.y, top)}));
+        troops.push_back(cell_at({p.x, std::min(p.y - 2.5, top)}));
+        spells.push_back(cell_at(p));
+    }
+    // Spells: the enemy towers still standing ...
+    const Team enemy_team = team == Team::Blue ? Team::Red : Team::Blue;
+    for (EntityId id : {b.king_tower(enemy_team), b.princess_tower(enemy_team, 0), b.princess_tower(enemy_team, 1)}) {
+        if (const Entity* t = b.find(id)) spells.push_back(cell_at(to_own_frame(a, team, t->pos)));
+    }
+    // ... and the two densest groups of enemy troops (worth within 2.5 tiles, centred on their middle).
+    std::vector<std::pair<double, Vec2>> groups;
+    for (const auto& [p, w] : enemy) {
+        double total = 0.0;
+        Vec2 mid{0.0, 0.0};
+        for (const auto& [q, v] : enemy) {
+            if (distance(p, q) <= 2.5) {
+                total += v;
+                mid = mid + q * v;
+            }
+        }
+        groups.push_back({total, mid * (1.0 / total)});
+    }
+    std::sort(groups.begin(), groups.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+    std::vector<Vec2> taken;
+    for (const auto& [total, mid] : groups) {
+        if (taken.size() >= 2) break;
+        if (std::any_of(taken.begin(), taken.end(), [&](Vec2 q) { return distance(q, mid) < 3.0; })) continue;
+        taken.push_back(mid);
+        spells.push_back(cell_at(mid));
+    }
+}
+
+void action_mask(const Battle& b, Team team, uint8_t* out, bool key_spots) {
     std::memset(out, 0, kNumActions);
     out[kNoop] = 1;
     if (b.finished()) return;
@@ -212,6 +306,23 @@ void action_mask(const Battle& b, Team team, uint8_t* out) {
     bool spell[kHandSize];
     for (int slot = 0; slot < kHandSize; ++slot) {
         spell[slot] = !me.hand[slot].empty() && b.data().card(me.hand[slot]).type == CardType::Spell;
+    }
+    if (key_spots) {
+        std::vector<int> troops, spells;
+        key_spot_cells(b, team, troops, spells);
+        for (int cell : troops) {
+            if (!b.can_deploy_at(team, cell_position(b, team, cell))) continue;
+            for (int slot = 0; slot < kHandSize; ++slot) {
+                if (affordable[slot] && !spell[slot]) out[1 + slot * kCells + cell] = 1;
+            }
+        }
+        for (int cell : spells) {
+            if (!b.can_cast_at(cell_position(b, team, cell))) continue;
+            for (int slot = 0; slot < kHandSize; ++slot) {
+                if (affordable[slot] && spell[slot]) out[1 + slot * kCells + cell] = 1;
+            }
+        }
+        return;
     }
     for (int cell = 0; cell < kCells; ++cell) {
         const Vec2 pos = cell_position(b, team, cell);

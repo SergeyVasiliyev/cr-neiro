@@ -13,9 +13,10 @@ enum class BotKind : uint8_t {
     Noop,       // never plays: a punching bag for curriculum training
     Random,     // random card at a random spot on its own half
     Heuristic,  // defends against troops on its half, pushes a lane when elixir is high
+    Pusher,     // beatdown like a player: saves elixir, giant behind the king, supports it at the bridge
 };
 
-BotKind bot_kind_from_string(const std::string& name);  // "noop" | "random" | "heuristic"
+BotKind bot_kind_from_string(const std::string& name);  // "noop" | "random" | "heuristic" | "pusher"
 const char* bot_kind_name(BotKind kind);
 
 struct BotMove {
