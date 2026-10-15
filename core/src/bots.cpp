@@ -245,6 +245,25 @@ public:
             return spot_near(b, team, slot, {mid_x, std::clamp(t.y - 3.0, 6.0, a.river_min_y - 1.5)}, rng_);
         }
 
+        // A counter-push: troops of ours left over from defending, on their way: the tank goes straight to the
+        // bridge in front of them (no time to walk it from the back).
+        int tank_slot = -1;
+        for (int slot = 0; slot < kHandSize; ++slot) {
+            if (!me.hand[slot].empty() && is_tank_card(b.data().card(me.hand[slot]))) tank_slot = slot;
+        }
+        if (tank_slot >= 0 && me.elixir + 1e-9 >= b.data().card(me.hand[tank_slot]).elixir) {
+            int left_lane = 0, right_lane = 0;
+            for (const auto& e : b.entities()) {
+                if (e.team != team || e.is_building() || is_tank(b, e)) continue;
+                const Vec2 p = to_own_frame(a, team, e.pos);
+                if (p.y >= 7.0 && p.y < a.river_min_y) (p.x < a.width / 2.0 ? left_lane : right_lane) += 1;
+            }
+            if (std::max(left_lane, right_lane) >= 2) {
+                const double x = left_lane >= right_lane ? a.bridge_x.front() : a.bridge_x.back();
+                return spot_near(b, team, tank_slot, {x, a.river_min_y - 0.5}, rng_);
+            }
+        }
+
         // A push: wait for a full bar, then the tank behind the king, on the weaker enemy tower's lane.
         if (me.elixir < push_at_) return std::nullopt;
         push_at_ = uniform(rng_, 8.8, 10.0);

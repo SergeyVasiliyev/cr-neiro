@@ -217,6 +217,9 @@ constexpr int kTroopSpots[][2] = {
     {9, 11},   // the middle
     {9, 9},    // the middle, lower
     {9, 7},    // the middle, in front of the king
+    {9, 5},    // right in front of the king
+    {12, 5},   // beside the princess tower, inner side, low (between it and the king)
+    {10, 10},  // the middle, a little off centre
     {14, 18},  // the pocket of a fallen enemy princess tower
     {14, 20},  // deeper in the pocket
     {17, 20},  // the far corner of the pocket (by the side wall)
@@ -241,7 +244,11 @@ void key_spot_cells(const Battle& b, Team team, std::vector<int>& troops, std::v
     // The enemy troop deepest into our half (or about to cross): meet it there, or a little before it.
     const Entity* deepest = nullptr;
     double deepest_y = a.river_max_y + 3.0;
-    std::vector<std::pair<Vec2, double>> enemy;  // own-frame position, worth (elixir of its card per unit)
+    // own-frame position where a spell cast now would find it (the blueprint second and the flight from
+    // our king tower: a walking troop has moved on towards its target meanwhile), worth (elixir per unit)
+    std::vector<std::pair<Vec2, double>> enemy;
+    const Vec2 our_king = to_own_frame(a, team, b.find(b.king_tower(team)) ? b.find(b.king_tower(team))->pos
+                                                                           : Vec2{a.width / 2.0, 3.0});
     for (const auto& e : b.entities()) {
         if (e.team == team || e.is_building()) continue;
         const Vec2 p = to_own_frame(a, team, e.pos);
@@ -250,7 +257,15 @@ void key_spot_cells(const Battle& b, Team team, std::vector<int>& troops, std::v
             const CardDef& card = b.data().card(b.data().card_ids[e.card_index]);
             worth = static_cast<double>(card.elixir) / std::max(1, card.count);
         }
-        enemy.push_back({p, worth});
+        Vec2 ahead = p;
+        if (!e.locked && e.deploy_ms_left <= 0 && e.speed > 0.0) {
+            const Entity* t = b.find(e.target);
+            const Vec2 goal = t ? to_own_frame(a, team, t->pos) : Vec2{p.x, 0.0};
+            const double lead = std::min(3.0, e.speed * (1.0 + distance(our_king, p) / 15.0));
+            const double d = distance(p, goal);
+            if (d > 1e-6) ahead = p + (goal + p * -1.0) * (std::min(lead, d) / d);
+        }
+        enemy.push_back({ahead, worth});
         if (p.y < deepest_y) {
             deepest = &e;
             deepest_y = p.y;
@@ -263,12 +278,30 @@ void key_spot_cells(const Battle& b, Team team, std::vector<int>& troops, std::v
         troops.push_back(cell_at({p.x, std::min(p.y - 2.5, top)}));
         spells.push_back(cell_at(p));
     }
-    // Spells: the enemy towers still standing ...
+    // Spells: the enemy princess towers still standing, and the king's only once he is awake (a spell on a
+    // sleeping king wakes him up: a gift to the opponent) ...
     const Team enemy_team = team == Team::Blue ? Team::Red : Team::Blue;
+    std::vector<Vec2> towers;
     for (EntityId id : {b.king_tower(enemy_team), b.princess_tower(enemy_team, 0), b.princess_tower(enemy_team, 1)}) {
-        if (const Entity* t = b.find(id)) spells.push_back(cell_at(to_own_frame(a, team, t->pos)));
+        const Entity* t = b.find(id);
+        if (!t || (t->kind == EntityKind::KingTower && !t->active)) continue;
+        towers.push_back(to_own_frame(a, team, t->pos));
+        spells.push_back(cell_at(towers.back()));
     }
-    // ... and the two densest groups of enemy troops (worth within 2.5 tiles, centred on their middle).
+    // ... a tower together with the troops next to it (between them, as far into the tower as still takes
+    // the troops' middle) ...
+    for (const Vec2& tw : towers) {
+        double total = 0.0;
+        Vec2 mid{0.0, 0.0};
+        for (const auto& [q, v] : enemy) {
+            if (distance(q, tw) <= 4.5) {
+                total += v;
+                mid = mid + q * v;
+            }
+        }
+        if (total > 0.0) spells.push_back(cell_at((mid * (1.0 / total) + tw) * 0.5));
+    }
+    // ... and the three densest groups of enemy troops (worth within 2.5 tiles, centred on their middle).
     std::vector<std::pair<double, Vec2>> groups;
     for (const auto& [p, w] : enemy) {
         double total = 0.0;
@@ -284,7 +317,7 @@ void key_spot_cells(const Battle& b, Team team, std::vector<int>& troops, std::v
     std::sort(groups.begin(), groups.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
     std::vector<Vec2> taken;
     for (const auto& [total, mid] : groups) {
-        if (taken.size() >= 2) break;
+        if (taken.size() >= 3) break;
         if (std::any_of(taken.begin(), taken.end(), [&](Vec2 q) { return distance(q, mid) < 3.0; })) continue;
         taken.push_back(mid);
         spells.push_back(cell_at(mid));

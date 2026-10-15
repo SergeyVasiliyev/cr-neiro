@@ -148,6 +148,16 @@ void Battle::materialize_pending(int dt) {
             e.deploy_ms_left = std::max(0, e.deploy_ms_left - overdue);
             e.play = p.play_index;
             e.unit = p.unit;
+            // Put down on top of a troop of ours from an earlier play, it lands in front of it (as in the
+            // game: the newer one ends up ahead), not pushed back by the collision.
+            const double forward = p.team == Team::Blue ? 1.0 : -1.0;
+            for (const auto& o : entities_) {
+                if (&o == &e || o.is_building() || o.team != e.team || o.air != e.air || o.play == e.play) continue;
+                if (distance(o.pos, e.pos) < (o.radius + e.radius) * 0.9) {
+                    e.pos.y = o.pos.y + forward * (o.radius + e.radius) * 0.9;
+                    if (!e.air) keep_out_of_river(e);
+                }
+            }
         }
         CardPlay& play = players_[idx(p.team)].plays[p.play_index];
         if (play.reveal_ms < 0) play.reveal_ms = time_ms_;

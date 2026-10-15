@@ -59,7 +59,8 @@ void action_mask(const Battle& battle, Team team, uint8_t* out, bool key_spots =
 // The spots a player would really use (cells, own frame): for troops - behind the king and the princess
 // towers, the back corners, the bridges, the middle at a few depths, in front of the towers, the pockets
 // of fallen enemy towers, and on / in front of the enemy troop deepest in our half; for spells - the enemy
-// towers, the two densest groups of enemy troops, and that deepest troop.
+// princess towers (the king's once awake), a tower with the troops next to it, the three densest groups of
+// enemy troops and that deepest troop, troops aimed where they will be when the spell lands.
 void key_spot_cells(const Battle& battle, Team team, std::vector<int>& troop_cells, std::vector<int>& spell_cells);
 
 // Absolute arena position of the center of an own-frame grid cell.
