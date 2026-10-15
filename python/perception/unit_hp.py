@@ -81,32 +81,50 @@ class UnitHpReader:
             build_badge_template()
         self.tpl = cv2.imread(template, cv2.IMREAD_GRAYSCALE)
 
-    def bars(self, frame):
-        """Every HP bar over a troop in a full frame (any size with 9:16; read at 1080 wide)."""
+    def bars(self, frame, detections=None):
+        """Every HP bar over a troop in a full frame (any size with 9:16; read at 1080 wide). With the
+        frame's detections (1080-wide boxes), only where their badges can be (assign() takes no other):
+        a few ms instead of ~45 for the whole arena."""
         if frame.shape[1] != 1080:
             frame = cv2.resize(frame, (1080, 1920), interpolation=cv2.INTER_LINEAR)
         y0, y1 = ARENA_ROWS
-        gray = cv2.cvtColor(frame[y0:y1], cv2.COLOR_BGR2GRAY)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        res = cv2.matchTemplate(gray, self.tpl, cv2.TM_CCOEFF_NORMED)
         th, tw = self.tpl.shape
-        out = []
-        ys, xs = np.where(res >= MATCH)
-        order = np.argsort(-res[ys, xs])
-        taken = np.zeros_like(res, dtype=bool)
-        for k in order:
-            y, x = ys[k], xs[k]
-            if taken[y, x]:
+        if detections is None:
+            windows = [(0, y0, frame.shape[1], y1)]
+        else:  # around each unit's badge (left edge, bottom) as BADGE_OFFSET says, with its tolerance and more
+            windows = []
+            mx, my = BADGE_TOLERANCE[0] + 8, BADGE_TOLERANCE[1] + 8
+            for d in detections:
+                if d.cls not in BADGE_OFFSET:
+                    continue
+                ox, oy = BADGE_OFFSET[d.cls]
+                bx = (d.box[0] + d.box[2]) / 2 + ox      # badge left edge
+                by = d.box[1] - oy - th                  # badge top
+                windows.append((int(max(0, bx - mx)), int(max(y0, by - my)),
+                                int(min(frame.shape[1], bx + tw + mx)), int(min(y1, by + th + my))))
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        found = []  # (score, frame y, frame x)
+        for wx0, wy0, wx1, wy1 in windows:
+            if wx1 - wx0 < tw or wy1 - wy0 < th:
                 continue
-            taken[max(0, y - th // 2):y + th // 2, max(0, x - tw // 2):x + tw // 2] = True
-            fy, fx = y + y0, x
+            gray = cv2.cvtColor(frame[wy0:wy1, wx0:wx1], cv2.COLOR_BGR2GRAY)
+            res = cv2.matchTemplate(gray, self.tpl, cv2.TM_CCOEFF_NORMED)
+            ys, xs = np.where(res >= MATCH)
+            found += [(float(res[y, x]), int(y) + wy0, int(x) + wx0) for y, x in zip(ys, xs)]
+        found.sort(reverse=True)
+        out = []
+        kept = []
+        for score, fy, fx in found:
+            if any(abs(fy - ky) < th // 2 and abs(fx - kx) < tw // 2 for ky, kx in kept):
+                continue  # the same badge (a neighbouring position, or found from two windows)
+            kept.append((fy, fx))
             team = _side(hsv[fy:fy + th, fx:fx + tw])
             if team is None:
                 continue
             bar = self._scan(hsv, fx + tw, fy + th // 2, team)
             if bar is None:
                 continue
-            out.append(Bar(team, (fx, fy, fx + tw, fy + th), bar[0], bar[1], float(res[y, x])))
+            out.append(Bar(team, (fx, fy, fx + tw, fy + th), bar[0], bar[1], score))
         return out
 
     @staticmethod

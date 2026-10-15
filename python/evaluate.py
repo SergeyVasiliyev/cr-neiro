@@ -31,18 +31,21 @@ def main():
     data = ce.load_data()
     deck = ce.parse_deck(args.deck, data)
     opp_deck = ce.parse_deck(args.opp_deck, data) if args.opp_deck else deck
-    players = []
+    players, key_spots = [], []
     for spec in (args.model, args.opponent):
         if spec in ce.BOT_KINDS:
             players.append(spec)
+            key_spots.append(False)
         elif os.path.exists(spec):
-            players.append(load_policy(spec, args.device)[0])
+            net, ckpt = load_policy(spec, args.device)
+            players.append(net)
+            key_spots.append(bool(ckpt.get("key_spots", False)))  # the action space each policy was trained on
         else:
             raise SystemExit(f"{spec!r} is neither a bot name nor a checkpoint file")
 
     bots = tuple(pl if isinstance(pl, str) else "noop" for pl in players)
     env = ce.VecEnv(data, [(deck, opp_deck)], num_envs=min(args.envs, args.games), bots=bots,
-                    decision_ticks=args.decision_ticks, seed=args.seed)
+                    decision_ticks=args.decision_ticks, seed=args.seed, key_spots=tuple(key_spots))
     results, crowns, lengths = [], [], []
     started = env.num_envs
     active = np.ones(env.num_envs, dtype=bool)  # envs still allowed to finish an episode we count

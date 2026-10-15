@@ -48,7 +48,7 @@ def instances():
     for line in out.splitlines():
         f = line.strip().split(",")
         if len(f) >= 5 and f[0].isdigit():
-            found.append({"index": int(f[0]), "title": f[1], "render": int(f[3]), "running": f[4] == "1"})
+            found.append({"index": int(f[0]), "title": f[1], "render": int(f[3]), "running": f[4] not in ("0", "")})  # 1 or 2 (started, Android up)
     return found
 
 

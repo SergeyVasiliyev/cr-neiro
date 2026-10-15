@@ -1,14 +1,17 @@
-"""Behavior cloning: teaches the policy network to play like a scripted bot - a start for PPO.
+"""Behavior cloning: teaches the policy network to play like a scripted bot and like the human players of
+the two-sided recordings - a start for PPO.
 
-    .venv\\Scripts\\python.exe python\\train_bc.py --run bc_heuristic [--minutes 60]
-    .venv\\Scripts\\python.exe python\\train_ppo.py --run ppo_from_bc --resume runs\\bc_heuristic\\latest.pt ...
+    .venv\\Scripts\\python.exe python\\train_bc.py --run bc_pusher [--minutes 60] [--key-spots]
+    .venv\\Scripts\\python.exe python\\train_ppo.py --run ppo_from_bc --resume runs\\bc_pusher\\latest.pt ...
 
-Matches of the teacher (the heuristic bot) run in the C++ batch env, against itself and against a random
-bot (states it would not reach against itself); every decision of a teacher side is an example: what it
-saw (the network's observation) and the move it made (as the network's action). The policy learns to pick
-that move (cross-entropy over the legal actions); the value head learns the outcome from there (the same
-discounted reward PPO uses), so PPO starts from both. Waiting is most of the teacher's decisions: a share
-of those is kept, weighted back up. Progress: runs/<name>/train.log.
+Matches of the teacher bot run in the C++ batch env, against itself, the heuristic bot and a random bot
+(states it would not reach against itself); every decision of a teacher side is an example: what it saw
+(the network's observation) and the move it made (as the network's action - with --key-spots, the legal
+key spot nearest to where the bot put the card). The policy learns to pick that move (cross-entropy over
+the legal actions); the value head learns the outcome from there (the same discounted reward PPO uses), so
+PPO starts from both. Waiting is most of the teacher's decisions: a share of those is kept, weighted back
+up. --human mixes in examples of people playing (tools/human_examples.py), a --human-share of each batch.
+Progress: runs/<name>/train.log.
 """
 import argparse
 import os
@@ -27,9 +30,15 @@ NOOP = 0
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--run", default="bc_heuristic")
+    p.add_argument("--run", default="bc_pusher")
     p.add_argument("--deck", default=",".join(ce.DEFAULT_DECK))
-    p.add_argument("--teacher", default="heuristic")
+    p.add_argument("--teacher", default="pusher")
+    p.add_argument("--key-spots", action="store_true", help="act on key spots only (see crsim rl.key_spot_cells)")
+    p.add_argument("--human", default="",
+                   help="examples of human play (tools/human_examples.py) - only from games played for real")
+    p.add_argument("--human-share", type=float, default=0.25, help="share of each batch from the human examples")
+    p.add_argument("--human-wait-weight", type=float, default=3.0,
+                   help="weight of a human 'wait' example (they are taken once a second, decisions are 0.3 s)")
     p.add_argument("--envs", type=int, default=128, help="matches at once (a quarter against a random bot)")
     p.add_argument("--decision-ticks", type=int, default=6)
     p.add_argument("--minutes", type=float, default=60.0)
@@ -99,6 +108,18 @@ class Episodes:
         return obs, actions, np.array([rets[j] for j in keep], np.float32), weights
 
 
+def nearest_legal(action, mask):
+    """The legal action of the same hand slot whose cell is nearest to this action's cell (NOOP if none)."""
+    cells_n = ce.crsim.rl.CELLS
+    grid_w = ce.crsim.rl.GRID_W
+    slot, cell = divmod(action - 1, cells_n)
+    legal = np.flatnonzero(mask[1 + slot * cells_n:1 + (slot + 1) * cells_n])
+    if len(legal) == 0:
+        return NOOP
+    d = (legal % grid_w - cell % grid_w) ** 2 + (legal // grid_w - cell // grid_w) ** 2
+    return 1 + slot * cells_n + int(legal[np.argmin(d)])
+
+
 def main():
     args = parse_args()
     rng = np.random.default_rng(args.seed)
@@ -117,13 +138,21 @@ def main():
     data = ce.load_data()
     deck = ce.parse_deck(args.deck, data)
     reward = ce.make_reward(args.reward_win, args.reward_crown, args.reward_tower)
-    n_rand = max(1, args.envs // 4)
+    n_rand = max(1, args.envs // 8)
+    n_heur = max(1, args.envs // 4)
+    vec = lambda n, bots, seed: ce.VecEnv(data, [(deck, deck)], num_envs=n, bots=bots,  # noqa: E731
+                                          decision_ticks=args.decision_ticks, seed=seed, reward=reward,
+                                          key_spots=args.key_spots)
     groups = [  # (env, sides the teacher plays)
-        (ce.VecEnv(data, [(deck, deck)], num_envs=args.envs - n_rand, bots=(args.teacher, args.teacher),
-                   decision_ticks=args.decision_ticks, seed=args.seed, reward=reward), (0, 1)),
-        (ce.VecEnv(data, [(deck, deck)], num_envs=n_rand, bots=(args.teacher, "random"),
-                   decision_ticks=args.decision_ticks, seed=args.seed + 1, reward=reward), (0,)),
+        (vec(args.envs - n_rand - n_heur, (args.teacher, args.teacher), args.seed), (0, 1)),
+        (vec(n_heur, (args.teacher, "heuristic"), args.seed + 1), (0,)),
+        (vec(n_rand, (args.teacher, "random"), args.seed + 2), (0,)),
     ]
+    human = None
+    if args.human and os.path.exists(args.human):
+        z = np.load(args.human)
+        human = {k: z[k] for k in z.files}
+        human_w = np.where(human["action"] == NOOP, args.human_wait_weight, 1.0).astype(np.float32)
     shapes = {k: v.shape[1:] for k, v in groups[0][0].obs(0).items()}
     np_dtypes = {k: v.dtype for k, v in groups[0][0].obs(0).items()}
     pool = Pool(args.pool, shapes, np_dtypes)
@@ -149,8 +178,9 @@ def main():
                 for i in range(env.num_envs):
                     a = int(taken[i, s])
                     if a != NOOP and not before[s]["action_mask"][i, a]:
-                        skipped += 1  # the bot's spot fell in a cell the network can't pick: not an example
-                        a = NOOP
+                        a = nearest_legal(a, before[s]["action_mask"][i])  # the key spot nearest to the bot's
+                        if a == NOOP:
+                            skipped += 1  # nowhere the network could put it: not an example
                     eps.record(i, s, {k: v[i] for k, v in before[s].items()}, a, float(rew[i, s]))
                     if done[i]:
                         out = eps.finish(i, s, args.gamma, args.keep_wait, rng)
@@ -162,6 +192,13 @@ def main():
         net.train()
         for _ in range(args.updates_per_step):
             obs, action, ret, weight = pool.sample(args.batch, rng)
+            if human is not None:  # a share of the batch: people playing (no return known: value not trained)
+                n_h = int(args.batch * args.human_share)
+                idx = rng.integers(0, len(human["action"]), n_h)
+                obs = {k: np.concatenate([v[:args.batch - n_h], human[k][idx]]) for k, v in obs.items()}
+                action = np.concatenate([action[:args.batch - n_h], human["action"][idx]])
+                ret = np.concatenate([ret[:args.batch - n_h], np.full(n_h, np.nan, np.float32)])
+                weight = np.concatenate([weight[:args.batch - n_h], human_w[idx]])
             obs_t = obs_to_torch(obs, device)
             action_t = torch.as_tensor(action, device=device)
             ret_t = torch.as_tensor(ret, device=device)
@@ -170,7 +207,8 @@ def main():
                 logits, value = net(obs_t)
             ce_loss = F.cross_entropy(logits, action_t, reduction="none")
             loss_pi = (ce_loss * w_t).sum() / w_t.sum()
-            loss_v = F.mse_loss(value, ret_t)
+            known = ~torch.isnan(ret_t)
+            loss_v = F.mse_loss(value[known], ret_t[known])
             loss = loss_pi + args.vf * loss_v
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
@@ -195,9 +233,9 @@ def main():
                 f"updates {updates} | loss {m['loss']:.3f} value {m['vloss']:.3f} | right move {m['acc_move']:.1%} "
                 f"right wait {m['acc_wait']:.1%} | bot spots off the grid {skipped}")
             save_checkpoint(os.path.join(run_dir, "latest.pt"), net, opt, global_step=0,
-                            card_ids=list(data.card_ids), teacher=args.teacher)
+                            card_ids=list(data.card_ids), teacher=args.teacher, key_spots=args.key_spots)
     save_checkpoint(os.path.join(run_dir, "latest.pt"), net, opt, global_step=0, card_ids=list(data.card_ids),
-                    teacher=args.teacher)
+                    teacher=args.teacher, key_spots=args.key_spots)
     log("=== done")
 
 

@@ -61,6 +61,12 @@ def parse_args():
     p.add_argument("--snapshot-every", type=int, default=25, help="iterations between self-play snapshots")
     p.add_argument("--save-every", type=int, default=20, help="iterations between checkpoints")
     p.add_argument("--resume", default=None, help="checkpoint to continue from")
+    p.add_argument("--key-spots", action="store_true",
+                   help="act on key spots only (on by itself when resuming a checkpoint trained so)")
+    p.add_argument("--anchor", default=None,
+                   help="a frozen policy to stay close to (e.g. the behavior-cloned one): KL penalty towards it")
+    p.add_argument("--anchor-coef", type=float, default=0.1, help="KL penalty weight at the start ...")
+    p.add_argument("--anchor-coef-end", type=float, default=0.01, help="... falling linearly to this at the end")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--threads", type=int, default=0, help="C++ simulation threads (0 = all cores)")
     p.add_argument("--no-amp", action="store_true", help="disable fp16 mixed precision on the GPU")
@@ -99,7 +105,7 @@ class Group:
         bot = name if name != "selfplay" else "noop"
         self.name, self.n = name, n
         self.env = ce.VecEnv(data, matchups, num_envs=n, bots=("noop", bot), decision_ticks=args.decision_ticks,
-                             seed=seed, reward=reward, num_threads=args.threads)
+                             seed=seed, reward=reward, num_threads=args.threads, key_spots=args.key_spots)
         self.results = collections.deque(maxlen=300)
         self.lengths = collections.deque(maxlen=300)
         self.crowns = collections.deque(maxlen=300)
@@ -129,6 +135,8 @@ def main():
     matchups, decks = build_matchups(args, data)
     reward = ce.make_reward(args.reward_win, args.reward_crown, args.reward_tower, args.reward_leak,
                             args.reward_trade, args.trade_floor)
+    if args.resume and not args.key_spots:
+        args.key_spots = bool(torch.load(args.resume, map_location="cpu", weights_only=False).get("key_spots", False))
     groups = [Group(name, n, data, matchups, args, reward, args.seed * 100 + i)
               for i, (name, n) in enumerate(parse_opponents(args.opponent, args.envs))]
     n_envs = sum(g.n for g in groups)
@@ -145,6 +153,11 @@ def main():
     if ckpt and ckpt.get("optimizer"):
         optimizer.load_state_dict(ckpt["optimizer"])
     snapshots = collections.deque([copy.deepcopy(net).eval()], maxlen=10)
+    anchor = None
+    if args.anchor:  # stays as it is: only a reference the policy is pulled towards, less and less
+        anchor, _ = load_policy(args.anchor, device)
+        for prm in anchor.parameters():
+            prm.requires_grad_(False)
 
     writer = SummaryWriter(run_dir)
     writer.add_text("args", str(vars(args)))
@@ -173,6 +186,7 @@ def main():
         t0 = time.time()
         frac = 1.0 - (global_step - start_step) / max(1, total - start_step)
         optimizer.param_groups[0]["lr"] = args.lr * max(frac, 0.05)
+        anchor_coef = args.anchor_coef_end + (args.anchor_coef - args.anchor_coef_end) * frac
         opponent_net = random.choice(snapshots)
 
         net.eval()
@@ -251,6 +265,14 @@ def main():
                 v_loss = 0.5 * torch.max((value - b_ret[idx]) ** 2, (v_clipped - b_ret[idx]) ** 2).mean()
                 entropy = (dist.entropy() * choice).sum() / n_choice
                 loss = pg_loss + args.vf * v_loss - args.ent * entropy
+                if anchor is not None:
+                    with torch.no_grad(), amp():
+                        anchor_logits, _ = anchor({k: v[idx] for k, v in flat.items()})
+                    logp_all = torch.log_softmax(logits.float(), -1)
+                    logq_all = torch.log_softmax(anchor_logits.float(), -1)
+                    kl_anchor = ((logp_all.exp() * (logp_all - logq_all)).sum(-1) * choice).sum() / n_choice
+                    loss = loss + anchor_coef * kl_anchor
+                    stats["kl_anchor"].append(kl_anchor.item())
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
@@ -285,12 +307,15 @@ def main():
                 writer.add_scalar(f"episode/crown_diff_{g.name}", np.mean(g.crowns), global_step)
                 line.append(f"vs {g.name}: win {wr:5.1%} ({len(g.results)})")
         line.append(f"ent {np.mean(stats['entropy']):.2f} kl {np.mean(stats['approx_kl']):.4f}")
+        if anchor is not None:
+            line.append(f"kl to anchor {np.mean(stats['kl_anchor']):.3f} (x{anchor_coef:.3f})")
         log(" | ".join(line))
 
         if iteration % args.snapshot_every == 0:
             snapshots.append(copy.deepcopy(net).eval())
         if iteration % args.save_every == 0 or global_step >= total:
-            meta = dict(global_step=global_step, card_ids=list(data.card_ids), args=vars(args))
+            meta = dict(global_step=global_step, card_ids=list(data.card_ids), args=vars(args),
+                        key_spots=args.key_spots)
             save_checkpoint(os.path.join(run_dir, "latest.pt"), net, optimizer, **meta)
             if iteration % (args.save_every * 10) == 0:
                 save_checkpoint(os.path.join(run_dir, f"step_{global_step}.pt"), net, optimizer, **meta)

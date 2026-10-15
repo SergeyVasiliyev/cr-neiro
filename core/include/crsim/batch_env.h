@@ -47,6 +47,7 @@ struct BatchEnvConfig {
     std::vector<Matchup> matchups;  // one is drawn uniformly at every reset
     BotKind bots[2] = {BotKind::Heuristic, BotKind::Heuristic};  // [blue, red], used on kBotAction
     rl::ObsConfig obs;
+    bool key_spots[2] = {false, false};  // per side (blue, red): act on key spots only (obs.key_spots is ignored)
     RewardConfig reward;
 };
 
