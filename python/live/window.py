@@ -97,9 +97,14 @@ class WindowScreen:
         if self._size != (w, h):
             if self._bitmap:
                 gdi32.DeleteObject(self._bitmap)
+                self._bitmap, self._size = None, None
+            if w <= 0 or h <= 0:  # the window is being closed or resized
+                raise RuntimeError(f"LDPlayer window has no area ({w}x{h})")
             info = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
             bits = ctypes.c_void_p()
             self._bitmap = gdi32.CreateDIBSection(self._screen_dc, ctypes.byref(info), 0, ctypes.byref(bits), None, 0)
+            if not bits.value:
+                raise RuntimeError(f"could not get a {w}x{h} buffer for the LDPlayer window")
             gdi32.SelectObject(self._mem_dc, self._bitmap)
             self._pixels = np.ctypeslib.as_array((ctypes.c_ubyte * (w * h * 4)).from_address(bits.value)).reshape(h, w, 4)
             self._size = (w, h)

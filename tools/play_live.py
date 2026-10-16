@@ -334,6 +334,10 @@ def main():
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break
+                # The window's close button: it would only come back with the next frame - take it as quit.
+                if cv2.getWindowProperty("cr-neiro live", cv2.WND_PROP_VISIBLE) < 1:
+                    print("preview window closed: quitting")
+                    break
                 if key == ord("p") and args.act:
                     playing = not playing
                     print("playing" if playing else "paused")

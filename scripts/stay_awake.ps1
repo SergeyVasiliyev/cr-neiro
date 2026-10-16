@@ -10,7 +10,7 @@ $ES_SYSTEM_REQUIRED = [uint32]"0x00000001"
 $end = (Get-Date).AddHours($Hours)
 [Win32.Power]::SetThreadExecutionState($ES_CONTINUOUS -bor $ES_SYSTEM_REQUIRED) | Out-Null
 while ((Get-Date) -lt $end) {
+    Start-Sleep -Seconds 60  # first a minute: the job may still be starting a fresh log
     if ((Test-Path $Log) -and (Select-String -Path $Log -SimpleMatch $Until -Quiet)) { break }
-    Start-Sleep -Seconds 60
 }
 [Win32.Power]::SetThreadExecutionState($ES_CONTINUOUS) | Out-Null
