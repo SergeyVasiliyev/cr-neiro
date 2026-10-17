@@ -29,7 +29,18 @@ struct RewardConfig {
     // kills a Musketeer is an even trade, one that also kills the Archers a good one.
     double elixir_trade = 0.0;
     double trade_floor = 0.25;
+    // ... except damage from spells, with this on: it takes the worth down in full (a Fireball that leaves a
+    // Musketeer at 10% did its job).
+    bool spell_full_worth = false;
+    // Patience: per elixir held, per second, counted up to bank_cap and only below a full bar (at full,
+    // elixir leaks instead), so the best place to be is just under full - pushes built from a full bar.
+    double elixir_bank = 0.0;
+    double bank_cap = 9.0;
 };
+
+// Rewards come in parts, for critics of their own: the result, the shaping signals (towers, crowns, elixir
+// trades, leak) and the style ones (bank). BatchEnv::reward is their plain sum.
+constexpr int kRewardParts = 3;
 
 struct Matchup {
     Deck blue;
@@ -49,6 +60,14 @@ struct BatchEnvConfig {
     rl::ObsConfig obs;
     bool key_spots[2] = {false, false};  // per side (blue, red): act on key spots only (obs.key_spots is ignored)
     RewardConfig reward;
+    // A move lands this many ticks after the decision (uniform; may be past the next decision: meanwhile that
+    // side can only wait), like the live bot's touches.
+    int delay_ticks_min = 0;
+    int delay_ticks_max = 0;
+    // Observation noise like the screen reader's: an enemy troop missed with this chance per observation,
+    // enemy troops seen up to this many tiles off.
+    double obs_miss_enemy = 0.0;
+    double obs_jitter = 0.0;
 };
 
 class BatchEnv {
@@ -64,6 +83,8 @@ public:
     // actions: [num_envs][2] (blue, red). Finished episodes are reset automatically: after the
     // call, done[i] = 1 marks that rewards/results are final and the observation is the new episode's.
     void step(const int32_t* actions);
+    // The scripted bot for one side of one env, from its next episode on (instead of config().bots).
+    void set_bot(int env, int side, BotKind kind);
 
     int num_envs() const { return cfg_.num_envs; }
     const BatchEnvConfig& config() const { return cfg_; }
@@ -82,6 +103,7 @@ public:
 
     // Step results.
     std::vector<float> reward;    // [num_envs][2]
+    std::vector<float> reward_parts;  // [num_envs][2][kRewardParts]: result, shaping, style
     std::vector<uint8_t> done;    // [num_envs]
     // The move each side made this step, as an action (bots' moves encoded too; rl::kNoop if none):
     // a scripted bot's games become examples to imitate.
@@ -98,7 +120,18 @@ private:
     struct Slot {
         std::unique_ptr<Battle> battle;
         std::unique_ptr<Bot> bots[2];
+        int bot_kind[2] = {-1, -1};  // set_bot: BotKind for the next episodes, -1 = config's
         std::mt19937_64 rng;
+        std::mt19937_64 obs_rng;     // observation noise only, so it never changes how games go
+        // A move decided but not landed yet (delay_ticks): until it lands that side only waits, like the
+        // live bot while its touches go through.
+        struct Pending {
+            int ticks = -1;  // ticks left before it lands, -1 = none
+            int32_t action = 0;
+            bool bot = false;
+            BotMove move;
+        };
+        Pending pending[2];
         int matchup = 0;
         int steps = 0;
         int tower_hp[2] = {0, 0};

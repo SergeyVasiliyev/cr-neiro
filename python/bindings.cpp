@@ -314,13 +314,18 @@ PYBIND11_MODULE(crsim, m) {
         .def_readwrite("tower_damage", &RewardConfig::tower_damage)
         .def_readwrite("elixir_leak", &RewardConfig::elixir_leak)
         .def_readwrite("elixir_trade", &RewardConfig::elixir_trade)
-        .def_readwrite("trade_floor", &RewardConfig::trade_floor);
+        .def_readwrite("trade_floor", &RewardConfig::trade_floor)
+        .def_readwrite("spell_full_worth", &RewardConfig::spell_full_worth)
+        .def_readwrite("elixir_bank", &RewardConfig::elixir_bank)
+        .def_readwrite("bank_cap", &RewardConfig::bank_cap);
+    m.attr("REWARD_PARTS") = kRewardParts;
 
     py::class_<BatchEnv>(m, "BatchEnv")
         .def(py::init([](const GameData& data, const std::vector<std::pair<Deck, Deck>>& matchups, int num_envs,
                          int decision_ticks, uint64_t seed, const py::handle& blue_bot, const py::handle& red_bot,
                          bool observe_enemy_elixir, const RewardConfig& reward, int num_threads, bool auto_reset,
-                         const py::object& key_spots) {
+                         const py::object& key_spots, std::pair<int, int> delay_ticks,
+                         std::pair<double, double> obs_noise) {
                  BatchEnvConfig cfg;
                  cfg.num_envs = num_envs;
                  cfg.num_threads = num_threads;
@@ -339,13 +344,24 @@ PYBIND11_MODULE(crsim, m) {
                      cfg.key_spots[1] = both.second;
                  }
                  cfg.reward = reward;
+                 cfg.delay_ticks_min = delay_ticks.first;
+                 cfg.delay_ticks_max = delay_ticks.second;
+                 cfg.obs_miss_enemy = obs_noise.first;
+                 cfg.obs_jitter = obs_noise.second;
                  return std::make_unique<BatchEnv>(data, std::move(cfg));
              }),
              py::arg("data"), py::arg("matchups"), py::arg("num_envs") = 1, py::arg("decision_ticks") = 10,
              py::arg("seed") = 0, py::arg("blue_bot") = "heuristic", py::arg("red_bot") = "heuristic",
              py::arg("observe_enemy_elixir") = true, py::arg("reward") = RewardConfig{}, py::arg("num_threads") = 0,
-             py::arg("auto_reset") = true, py::arg("key_spots") = false)
+             py::arg("auto_reset") = true, py::arg("key_spots") = false,
+             py::arg("delay_ticks") = std::pair<int, int>{0, 0}, py::arg("obs_noise") = std::pair<double, double>{0.0, 0.0},
+             "delay_ticks: (min, max) ticks a move lands after the decision; "
+             "obs_noise: (chance to miss an enemy troop, position jitter in tiles)")
         .def("reset", &BatchEnv::reset)
+        .def(
+            "set_bot",
+            [](BatchEnv& env, int e, int side, const py::handle& kind) { env.set_bot(e, side, bot_from(kind)); },
+            py::arg("env"), py::arg("side"), py::arg("kind"), "the scripted bot of one side, from the next episode on")
         .def("reset_env", &BatchEnv::reset_env, py::arg("env"))
         .def(
             "step",
@@ -376,6 +392,7 @@ PYBIND11_MODULE(crsim, m) {
         CRSIM_VIEW(enemy_history_age, n, 2, rl::kHistory)
         CRSIM_VIEW(action_mask, n, 2, rl::kNumActions)
         CRSIM_VIEW(reward, n, 2)
+        CRSIM_VIEW(reward_parts, n, 2, kRewardParts)
         CRSIM_VIEW(taken, n, 2)
         CRSIM_VIEW(done, n)
         CRSIM_VIEW(winner, n)

@@ -49,14 +49,26 @@ def main():
     results, crowns, lengths = [], [], []
     started = env.num_envs
     active = np.ones(env.num_envs, dtype=bool)  # envs still allowed to finish an episode we count
+    # How the model plays (blue): elixir it had when it put each card down, and its spells.
+    spell_token = np.zeros(ce.crsim.rl.vocab_size(data), dtype=bool)
+    for cid, card in data.cards.items():
+        spell_token[ce.crsim.rl.FIRST_CARD_TOKEN + card.index] = card.is_spell
+    play_elixir, spells = [], 0
     t0 = time.time()
     while len(results) < args.games:
         actions = np.full((env.num_envs, 2), ce.BOT_ACTION, dtype=np.int32)
         for side, pl in enumerate(players):
             if not isinstance(pl, str):
                 obs = obs_to_torch(env.obs(side), args.device)
-                actions[:, side] = pl.act(obs, greedy=args.greedy)[0].cpu().numpy()
+                with torch.no_grad():
+                    actions[:, side] = pl.act(obs, greedy=args.greedy)[0].cpu().numpy()
+        elixir = env.obs(0)["global"][:, 4] * 10.0
+        hand = env.obs(0)["hand"].copy()
         _, done = env.step(actions)
+        taken = env.env.taken[:, 0]
+        for i in np.flatnonzero((taken > 0) & active):
+            play_elixir.append(elixir[i])
+            spells += int(spell_token[hand[i, (taken[i] - 1) // ce.CELLS]])
         for i in np.flatnonzero(done & active):
             w = int(env.winner[i])
             results.append(1.0 if w == 0 else (0.5 if w == 2 else 0.0))
@@ -76,6 +88,10 @@ def main():
     print(f"  avg crowns {c[:, 0].mean():.2f} : {c[:, 1].mean():.2f}, avg match length {np.mean(lengths):.0f}s")
     se = np.sqrt(results.mean() * (1 - results.mean()) / len(results))
     print(f"  score {results.mean():.3f} +- {1.96 * se:.3f} (95%)")
+    if play_elixir:
+        pe, n = np.array(play_elixir), max(1, len(crowns))  # (all finished games, a few past --games)
+        print(f"  blue's style: {len(pe) / n:.1f} cards per game, elixir when playing {pe.mean():.1f} "
+              f"(from 8+: {np.mean(pe >= 8):.0%}), spells per game {spells / n:.1f}")
 
 
 if __name__ == "__main__":

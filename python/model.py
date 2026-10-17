@@ -33,11 +33,14 @@ def obs_to_torch(obs, device):
 
 
 class PolicyNet(nn.Module):
-    def __init__(self, vocab_size, d_model=128, n_layers=2, n_heads=4, grid_channels=32):
+    """n_values > 1: one value head per reward part (result, shaping, style), value is then (B, n_values)."""
+
+    def __init__(self, vocab_size, d_model=128, n_layers=2, n_heads=4, grid_channels=32, trunk=256, n_values=1):
         super().__init__()
         self.config = dict(vocab_size=vocab_size, d_model=d_model, n_layers=n_layers, n_heads=n_heads,
-                           grid_channels=grid_channels)
-        d, c = d_model, grid_channels
+                           grid_channels=grid_channels, trunk=trunk, n_values=n_values)
+        d, c, w = d_model, grid_channels, trunk
+        self.n_values = n_values
         self.token_emb = nn.Embedding(vocab_size, d)
         self.entity_in = nn.Linear(crsim.rl.ENTITY_FEATURES, d)
         layer = nn.TransformerEncoderLayer(d, n_heads, dim_feedforward=2 * d, dropout=0.0, batch_first=True,
@@ -49,7 +52,7 @@ class PolicyNet(nn.Module):
         # Opponent's recent plays (cycle tracking): card + how long ago, in order.
         self.history_age = nn.Linear(1, d)
         self.history_in = nn.Sequential(nn.Linear(crsim.rl.HISTORY * d, d), nn.ReLU())
-        self.trunk = nn.Sequential(nn.Linear(5 * d, 256), nn.ReLU(), nn.Linear(256, 256), nn.ReLU())
+        self.trunk = nn.Sequential(nn.Linear(5 * d, w), nn.ReLU(), nn.Linear(w, w), nn.ReLU())
 
         # Spatial branch: entity features painted on the grid + coordinate channels.
         self.to_grid = nn.Linear(d, c)
@@ -58,10 +61,14 @@ class PolicyNet(nn.Module):
             nn.Conv2d(c, c, 3, padding=1), nn.ReLU(),
             nn.Conv2d(c, c, 3, padding=1), nn.ReLU(),
         )
-        self.grid_film = nn.Linear(256, c)  # trunk context modulates the grid features
-        self.slot_query = nn.Sequential(nn.Linear(256 + d, 128), nn.ReLU(), nn.Linear(128, c))
-        self.noop_head = nn.Linear(256, 1)
-        self.value_head = nn.Sequential(nn.Linear(256, 128), nn.ReLU(), nn.Linear(128, 1))
+        self.grid_film = nn.Linear(w, c)  # trunk context modulates the grid features
+        self.slot_query = nn.Sequential(nn.Linear(w + d, 128), nn.ReLU(), nn.Linear(128, c))
+        self.noop_head = nn.Linear(w, 1)
+        if n_values == 1:
+            self.value_head = nn.Sequential(nn.Linear(w, 128), nn.ReLU(), nn.Linear(128, 1))
+        else:  # a critic of its own per reward part, on a wider layer of their own
+            self.value_head = nn.Sequential(nn.Linear(w, w), nn.ReLU(), nn.Linear(w, w // 2), nn.ReLU(),
+                                            nn.Linear(w // 2, n_values))
 
         ys, xs = torch.meshgrid(torch.linspace(0, 1, GRID_H), torch.linspace(0, 1, GRID_W), indexing="ij")
         self.register_buffer("coords", torch.stack([xs, ys])[None], persistent=False)
@@ -108,7 +115,8 @@ class PolicyNet(nn.Module):
         # float32 outside autocast: -1e9 masking and the softmax over 2305 actions need the range.
         logits = torch.cat([self.noop_head(h), place], dim=-1).float()
         logits = logits.masked_fill(~obs["action_mask"], -1e9)
-        return logits, self.value_head(h).squeeze(-1).float()
+        value = self.value_head(h).float()
+        return logits, (value.squeeze(-1) if self.n_values == 1 else value)
 
     @torch.no_grad()
     def act(self, obs, greedy=False):

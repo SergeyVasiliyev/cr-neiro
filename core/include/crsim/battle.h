@@ -44,6 +44,7 @@ struct Entity {
     bool active = true;  // king tower sleeps until a princess tower falls or it takes damage
     int play = -1;       // troops: which of its team's plays (PlayerState::plays index) it came from, -1 = none
     int unit = -1;       // ... and which unit of that play's group
+    int spell_damage = 0;  // troops: HP taken from spells (rewards count it at the troop's full worth)
 
     bool is_building() const { return kind != EntityKind::Troop; }
     bool alive() const { return hp > 0; }
@@ -233,6 +234,7 @@ private:
     bool follow_real_ = false;  // digital twin: never finish on our own
     bool record_damage_ = false;
     std::string hit_source_;    // who is dealing the damage being applied
+    bool spell_hit_ = false;    // ... and whether it is a spell
 
     std::array<PlayerState, 2> players_;
     std::array<TowerIds, 2> towers_;

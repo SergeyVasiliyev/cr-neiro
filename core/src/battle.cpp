@@ -666,11 +666,13 @@ void Battle::update_projectiles(int dt) {
         }
         p.done = true;
         hit_source_ = p.source;
+        spell_hit_ = p.is_spell();
         if (p.splash_radius > 0.0) {
             apply_splash(p.team, p.aim, p.splash_radius, p.damage, p.tower_damage_pct, p.targets, p.pushback);
         } else if (target && target->alive()) {
             apply_damage(*target, p.damage, p.tower_damage_pct);
         }
+        spell_hit_ = false;
     }
     std::erase_if(projectiles_, [](const Projectile& p) { return p.done; });
 }
@@ -679,6 +681,7 @@ void Battle::apply_damage(Entity& target, int damage, int tower_damage_pct) {
     // Crown towers take a share of some damage, rounded up: the game takes off the reduction rounded down
     // (Fireball 688 -> 159, Arrows 122 -> 25 per wave at level 11, as seen in friendly battles).
     if (target.is_building() && tower_damage_pct != 100) damage -= damage * (100 - tower_damage_pct) / 100;
+    if (spell_hit_ && !target.is_building()) target.spell_damage += std::min(damage, std::max(0, target.hp));
     target.hp -= damage;
     if (record_damage_ && record_events_) {
         events_.push_back({time_ms_, EventType::Damage, target.team, target.id, hit_source_ + ":" + std::to_string(damage)});

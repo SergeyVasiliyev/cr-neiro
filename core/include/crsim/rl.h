@@ -4,6 +4,7 @@
 // Everything is expressed in the acting player's own frame (their side at the bottom),
 // so one policy can play either side.
 #include <cstdint>
+#include <random>
 #include <vector>
 
 #include "crsim/battle.h"
@@ -37,6 +38,11 @@ struct ObsConfig {
     bool observe_enemy_elixir = true;
     // Only key spots are legal (key_spot_cells): ~30 per troop card, a few per spell, instead of every tile.
     bool key_spots = false;
+    // Training noise like the screen reader's (used only with rng): each enemy troop is missed with this
+    // chance, and enemy troops are seen up to this many tiles off.
+    double miss_enemy = 0.0;
+    double jitter = 0.0;
+    std::mt19937_64* rng = nullptr;
 };
 
 // Caller-owned buffers for one player's observation.

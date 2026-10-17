@@ -68,10 +68,12 @@ def random_decks(data, count, seed=0, supported_only=True):
     return [rng.sample(pool, 8) for _ in range(count)]
 
 
-def make_reward(win=1.0, crown=0.0, tower_damage=0.0, elixir_leak=0.0, elixir_trade=0.0, trade_floor=0.25):
+def make_reward(win=1.0, crown=0.0, tower_damage=0.0, elixir_leak=0.0, elixir_trade=0.0, trade_floor=0.25,
+                spell_full_worth=False, elixir_bank=0.0, bank_cap=9.0):
     r = crsim.RewardConfig()
     r.win, r.crown, r.tower_damage, r.elixir_leak = win, crown, tower_damage, elixir_leak
     r.elixir_trade, r.trade_floor = elixir_trade, trade_floor
+    r.spell_full_worth, r.elixir_bank, r.bank_cap = spell_full_worth, elixir_bank, bank_cap
     return r
 
 
@@ -99,13 +101,15 @@ class VecEnv:
     """
 
     def __init__(self, data, matchups, num_envs=64, bots=("heuristic", "heuristic"), decision_ticks=10,
-                 seed=0, reward=None, observe_enemy_elixir=True, num_threads=0, auto_reset=True, key_spots=False):
+                 seed=0, reward=None, observe_enemy_elixir=True, num_threads=0, auto_reset=True, key_spots=False,
+                 delay_ticks=(0, 0), obs_noise=(0.0, 0.0)):
         self.data = data
         self.matchups = [(list(b), list(r)) for b, r in matchups]
         self.env = crsim.BatchEnv(
             data, self.matchups, num_envs=num_envs, decision_ticks=decision_ticks, seed=seed,
             blue_bot=bots[0], red_bot=bots[1], observe_enemy_elixir=observe_enemy_elixir,
-            reward=reward or make_reward(), num_threads=num_threads, auto_reset=auto_reset, key_spots=key_spots)
+            reward=reward or make_reward(), num_threads=num_threads, auto_reset=auto_reset, key_spots=key_spots,
+            delay_ticks=tuple(delay_ticks), obs_noise=tuple(obs_noise))
         self.key_spots = key_spots
         self.num_envs = num_envs
         self.decision_ticks = decision_ticks
@@ -121,6 +125,15 @@ class VecEnv:
 
     def reset(self):
         self.env.reset()
+
+    def set_bot(self, env, side, kind):
+        """The scripted bot ("heuristic", "pusher", ...) of one side of one env, from its next episode on."""
+        self.env.set_bot(env, side, kind)
+
+    @property
+    def reward_parts(self):
+        """(N, 2, 3) rewards of the last step in parts: result, shaping, style (reward is their sum)."""
+        return self.env.reward_parts
 
     # Results of episodes that ended in the last step (where done = 1).
     @property

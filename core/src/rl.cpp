@@ -170,7 +170,15 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
             continue;
         }
         const Entity& e = *order[i].e;
-        const Vec2 p = to_own_frame(a, team, e.pos);
+        Vec2 p = to_own_frame(a, team, e.pos);
+        if (cfg.rng && e.team != team && !e.is_building()) {
+            std::uniform_real_distribution<double> u(0.0, 1.0);
+            if (cfg.miss_enemy > 0.0 && u(*cfg.rng) < cfg.miss_enemy) continue;  // not seen: the slot stays empty
+            if (cfg.jitter > 0.0) {
+                p.x = std::clamp(p.x + (2.0 * u(*cfg.rng) - 1.0) * cfg.jitter, 0.0, static_cast<double>(a.width));
+                p.y = std::clamp(p.y + (2.0 * u(*cfg.rng) - 1.0) * cfg.jitter, 0.0, static_cast<double>(a.height));
+            }
+        }
         f[kOwn] = e.team == team ? 1.0f : 0.0f;
         f[kX] = static_cast<float>(p.x / a.width);
         f[kY] = static_cast<float>(p.y / a.height);

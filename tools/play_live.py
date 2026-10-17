@@ -49,6 +49,8 @@ class PolicyBrain:
         net, ckpt = load_policy(path, device)
         self.player = PolicyPlayer(net, device, greedy=True)
         self.key_spots = bool(ckpt.get("key_spots", False))  # the action space it was trained with
+        # ... and the rhythm: it decided every decision_ticks x 50 ms in training
+        self.decide_every = ckpt.get("args", {}).get("decision_ticks", 6) * 0.05
 
     def __call__(self, battle):
         action = int(self.player(crsim.rl.encode(battle, BLUE, key_spots=self.key_spots)))
@@ -202,7 +204,8 @@ def main():
     p.add_argument("--method", default="tap", choices=("tap", "drag"),
                    help="how to put a card down: tap the card then the spot (exact), or drag it (lands short)")
     p.add_argument("--preview-every", type=int, default=3, help="draw the preview window every N frames")
-    p.add_argument("--decide-every", type=float, default=0.3, help="seconds between brain decisions")
+    p.add_argument("--decide-every", type=float, default=None,
+                   help="seconds between brain decisions (default: as the policy was trained, else 0.3)")
     p.add_argument("--no-detector", action="store_true", help="no unit detection (the opponent stays invisible)")
     p.add_argument("--weights", default=None, help="unit detector weights (default: the latest)")
     p.add_argument("--serial", default=None, help="adb device (default: the first emulator)")
@@ -241,6 +244,8 @@ def main():
     hp_reader = UnitHpReader()
     match = LiveMatch(data)
     brain = make_brain(args.brain)
+    if args.decide_every is None:
+        args.decide_every = getattr(brain, "decide_every", 0.3)
     playing = args.act
     next_decision = next_status = 0.0
     warned = False

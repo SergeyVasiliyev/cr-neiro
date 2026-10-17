@@ -85,7 +85,8 @@ def main():
     with open(LOG, "w", encoding="utf-8") as f:
         f.write(f"=== start {time.strftime('%Y-%m-%d %H:%M:%S')}, best so far: {steps_of(best) / 1e6:.1f}M decisions\n")
     current = best
-    chunk = 0
+    done = [int(m.group(1)) for m in (re.fullmatch(r"chunk_(\d+)\.pt", n) for n in os.listdir(RUN)) if m]
+    chunk = max(done, default=0)  # numbering goes on after an earlier start
     while time.time() - started < args.hours * 3600:
         chunk += 1
         total = steps_of(current) + int(args.chunk)
