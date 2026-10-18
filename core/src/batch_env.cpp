@@ -119,16 +119,48 @@ void BatchEnv::reset_slot(int i) {
         const BotKind kind = s.bot_kind[side] >= 0 ? static_cast<BotKind>(s.bot_kind[side]) : cfg_.bots[side];
         s.bots[side] = make_bot(kind, s.rng());
     }
+    if (cfg_.endgame_share > 0.0 && std::uniform_real_distribution<double>(0.0, 1.0)(s.rng) < cfg_.endgame_share) {
+        start_endgame(s);
+    }
     s.steps = 0;
     for (int side = 0; side < 2; ++side) {
         s.tower_hp[side] = tower_hp(*s.battle, static_cast<Team>(side));
-        s.crowns[side] = 0;
-        s.leaked[side] = 0.0;
+        s.crowns[side] = s.battle->player(static_cast<Team>(side)).crowns;
+        s.leaked[side] = s.battle->player(static_cast<Team>(side)).elixir_leaked;  // (an endgame start ran the clock)
         s.plays_counted[side] = 0;
     }
     s.troop_worth.clear();
     for (auto& pd : s.pending) pd = Slot::Pending{};
     matchup[i] = s.matchup;
+}
+
+void BatchEnv::start_endgame(Slot& s) {
+    Battle& b = *s.battle;
+    std::uniform_real_distribution<double> u(0.0, 1.0);
+    const int to = cfg_.endgame_from_ms + static_cast<int>(u(s.rng) * std::max(0, cfg_.endgame_to_ms - cfg_.endgame_from_ms));
+    while (b.time_ms() < to && !b.finished()) b.step();  // nobody plays: the clock, elixir and overtime run on
+    const Matchup& m = cfg_.matchups[s.matchup];
+    for (int side = 0; side < 2; ++side) {
+        const Team team = static_cast<Team>(side);
+        for (int k = 0; k < 2; ++k) {
+            const EntityId id = b.princess_tower(team, k);
+            const Entity* t = b.find(id);
+            if (!t) continue;
+            // a quarter within reach of a spell (Fireball takes 159, Arrows 75 off a tower), a quarter low,
+            // half anywhere above
+            const double r = u(s.rng);
+            const int hp = r < 0.25 ? 30 + static_cast<int>(270 * u(s.rng))
+                         : r < 0.5  ? static_cast<int>(t->max_hp * (0.1 + 0.22 * u(s.rng)))
+                                    : static_cast<int>(t->max_hp * (0.32 + 0.68 * u(s.rng)));
+            b.twin_set_hp(id, std::max(1, hp));
+        }
+        b.set_elixir(team, 10.0 * u(s.rng));
+        Deck order = side == 0 ? m.blue : m.red;  // a random point in the cycle
+        std::shuffle(order.begin(), order.end(), s.rng);
+        std::array<std::string, kHandSize> cards;
+        for (int c = 0; c < kHandSize; ++c) cards[c] = order[c];
+        b.set_hand(team, cards, order[kHandSize]);
+    }
 }
 
 void BatchEnv::write_obs(int i) {

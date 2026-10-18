@@ -285,23 +285,61 @@ def replay(own, candidates, frames, start, data=None, deck=DEFAULT_DECK):
 
 
 # --- 4. compare ----------------------------------------------------------------------------------
-def match_units(sim_units, real_tracks, max_dist=3.0):
-    """Greedy pairs (sim unit, real track state) of the same kind and side, closest first."""
-    pairs = []
+def match_units(sim_units, real_tracks, max_dist=3.0, prev=None, keep_bonus=1.0, hp_weight=2.0):
+    """Pairs (sim unit, real track state) of the same kind and side, chosen together per kind and side so the
+    total distance is smallest: closest-first pairing swaps look-alikes (three minions crossing). A pair kept
+    from the last frame (prev: sim key -> track id) counts keep_bonus tiles closer, so identities stay put;
+    a unit left unpaired costs max_dist (so does any pair farther than that: never made). Where a track's HP
+    bar is read ("hp_frac"), a difference in HP counts too, hp_weight tiles for all of it: of two minions side by
+    side, the one the tower hit in the game goes with the one it hit in the simulator (video32: the same two
+    minions at 50% and 5%, paired the wrong way round, showed as +45% HP errors)."""
+    groups = {}
     for i, s in enumerate(sim_units):
-        for j, r in enumerate(real_tracks):
-            if s["cls"] == r["cls"] and s["team"] == r["team"]:
-                d = math.dist((s["x"], s["y"]), (r["x"], r["y"]))
-                if d <= max_dist:
-                    pairs.append((d, i, j))
-    pairs.sort()
-    used_s, used_r, out = set(), set(), []
-    for d, i, j in pairs:
-        if i in used_s or j in used_r:
+        groups.setdefault((s["cls"], s["team"]), ([], []))[0].append(i)
+    for j, r in enumerate(real_tracks):
+        groups.setdefault((r["cls"], r["team"]), ([], []))[1].append(j)
+    out = []
+    for si, rj in groups.values():
+        if not si or not rj:
             continue
-        used_s.add(i)
-        used_r.add(j)
-        out.append((i, j, d))
+        dist = {(i, j): math.dist((sim_units[i]["x"], sim_units[i]["y"]), (real_tracks[j]["x"], real_tracks[j]["y"]))
+                for i in si for j in rj}
+        cost = {}
+        for (i, j), d in dist.items():
+            if d <= max_dist:
+                key = sim_units[i].get("key")
+                kept = prev is not None and key is not None and prev.get(key) == real_tracks[j].get("id")
+                cost[(i, j)] = d - (keep_bonus if kept else 0.0)
+                frac, max_hp = real_tracks[j].get("hp_frac"), sim_units[i].get("max_hp")
+                if frac is not None and max_hp:
+                    cost[(i, j)] += hp_weight * abs(sim_units[i]["hp"] / max_hp - frac)
+        if len(si) > 8 or len(rj) > 12:  # (never in this deck) too many to try every way: closest first
+            used_s, used_r = set(), set()
+            for (i, j), c in sorted(cost.items(), key=lambda kv: kv[1]):
+                if i not in used_s and j not in used_r:
+                    used_s.add(i)
+                    used_r.add(j)
+                    out.append((i, j, dist[(i, j)]))
+            continue
+        memo = {}
+
+        def best(a, used):  # the cheapest way to pair sim units si[a:] with tracks not in `used`
+            if a == len(si):
+                return 0.0, ()
+            if (a, used) in memo:
+                return memo[(a, used)]
+            c0, rest0 = best(a + 1, used)
+            result = (c0 + max_dist, rest0)  # this one unpaired
+            for b, j in enumerate(rj):
+                if not used >> b & 1 and (si[a], j) in cost:
+                    c, rest = best(a + 1, used | 1 << b)
+                    c += cost[(si[a], j)]
+                    if c < result[0]:
+                        result = (c, ((si[a], j),) + rest)
+            memo[(a, used)] = result
+            return result
+
+        out.extend((i, j, dist[(i, j)]) for i, j in best(0, 0)[1])
     return out
 
 

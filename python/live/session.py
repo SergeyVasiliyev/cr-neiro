@@ -107,8 +107,9 @@ class LiveMatch:
         self.own_units = set()   # blue track ids already given to one of our plays
         self.own_spells = []     # (card, pos, game s) of our spells: explosions there and then are ours
         self.sim_seen = {}       # unit key -> last time a real unit matched it
+        self.last_pair = {}      # unit key -> track id it was matched with last frame (identities stay put)
         self.gone = {}           # unit key -> (game s, x, y, hp, "drop" / "death") of units the simulator lost
-        self.track_hp = {}       # track id -> (HP fraction from its bar, time, steady)
+        self.track_hp = {}       # track id -> (HP fraction from its bar, time, steady, readings in a row agreeing)
         self.track_no_bar = {}   # track id -> since when it has been seen without a bar
         self.spawned_for = {}    # track id -> when it was last explained (a play, a revived unit, ignored)
         self.tower_reads = {}    # tower name -> (hp, how many frames in a row it was read)
@@ -412,10 +413,12 @@ class LiveMatch:
             if di in by_det:
                 prev = self.track_hp.get(tr.id)
                 frac = fraction(by_det[di], d.cls)
-                # Trust a bar reading only when the one before agrees (a bar read wrong, or given to the
-                # wrong minion of a bunch, would otherwise wreck the simulated unit).
-                steady = prev is not None and t - prev[1] < 0.35 and abs(prev[0] - frac) < 0.12
-                self.track_hp[tr.id] = (frac, t, steady)
+                # Trust a bar reading only when the ones before agree (a bar read wrong, or given to the
+                # wrong minion of a bunch, would otherwise wreck the simulated unit): one before for most,
+                # two for minions (tiny bars, three of them close together).
+                run = prev[3] + 1 if prev is not None and t - prev[1] < 0.35 and abs(prev[0] - frac) < 0.12 else 0
+                steady = run >= (2 if d.cls == "minion" else 1)
+                self.track_hp[tr.id] = (frac, t, steady, run)
                 self.track_no_bar.pop(tr.id, None)
             else:
                 self.track_no_bar.setdefault(tr.id, t)
@@ -434,7 +437,10 @@ class LiveMatch:
     FAR_MATCH = 5.0        # tiles: an unmatched simulated unit this close is the one seen, walked off
     DEATH_GRACE = 1.0      # s: a unit the simulator has just killed is still seen dying in the game for a
                            # moment - not a unit the simulator lost (bringing it back put ghosts into fights)
-    REVIVE_WINDOW = 60.0   # s: a lost unit of a play this old can still be the one seen
+    REVIVE_WINDOW = 60.0   # s: a lost unit of a play this old can still be the one seen (dropped while hidden) ...
+    REVIVE_DEAD = 6.0      # ... but one the simulator killed only this recently: older, the one seen is another
+                           # unit (live: own units "back" 40 s after dying were the detector naming a knight a
+                           # mini pekka; theirs were new plays, refused by the cycle check and replaced by these)
     REVIVE_HP = 0.3        # of max HP, for a unit the simulator killed and the game didn't (until its bar is read)
 
     def _tower_id(self, name):
@@ -546,7 +552,11 @@ class LiveMatch:
                 "max_hp": e.max_hp, "deploying": e.deploy_ms_left > 0, "team": "blue" if e.team == BLUE else "red",
                 "x": e.pos.x, "y": e.pos.y}
                for e in b.entities if not e.is_building]
-        pairs = twin.match_units(sim, real, self.MATCH_DIST)
+        for r in real:  # a steady HP bar reading of this frame helps tell look-alikes apart
+            hp = self.track_hp.get(r["id"])
+            r["hp_frac"] = hp[0] if hp is not None and hp[1] == t and hp[2] else None
+        pairs = twin.match_units(sim, real, self.MATCH_DIST, prev=self.last_pair)
+        self.last_pair = {sim[i]["key"]: real[j]["id"] for i, j, _ in pairs if sim[i]["key"] is not None}
         matched_real = set()
         for i, j, d in pairs:
             s_, r = sim[i], real[j]
@@ -648,6 +658,8 @@ class LiveMatch:
             age = self.now - rec[0]
             if age > (window if window is not None else self.REVIVE_WINDOW) or self._entity((pid, k)) is not None:
                 continue
+            if rec[4] == "death" and age > self.REVIVE_DEAD:
+                continue  # killed long ago: what is seen now is another unit (a new play, or the detector's mistake)
             d = math.dist((rec[1], rec[2]), (x, y))
             if d <= reach[0] + reach[1] * age and (best is None or d < best[0]):
                 best = (d, (pid, k), rec)
@@ -837,6 +849,11 @@ class LiveMatch:
             cand.rejected = twin.judge_enemy(self.battle, self.data, cand, self.accepted_red, seen_elsewhere=elsewhere)
             if cand.rejected == "card not back in hand yet" and self._undo_phantom(cand, t, g):
                 cand.rejected = None
+            if cand.rejected == "card not back in hand yet" and self._unmistakable(cand, tr):
+                # The whole group came down (both archers, all three minions) or the spell hit: that is a play,
+                # whatever the cycle says - an earlier play was misread, so the cycle is what is wrong.
+                self.log.append((g, f"red {cand.card}: cycle out of step, the screen trusted"))
+                cand.rejected = None
             if cand.rejected != "card not back in hand yet":
                 self.spawned_for.update((u, t) for u in cand.units)  # a new play's units, or units it has
             if cand.rejected:
@@ -853,6 +870,16 @@ class LiveMatch:
     PHANTOM_HITS = 8       # a play whose units were seen fewer times than this, and are gone, was a mistake ...
     PHANTOM_WINDOW = 10.0  # ... if it was this recent (s): an older one was real and died - checked against
                            # both-side recordings (3 of 4 undos were of real plays 14-29 s old, the right one 8 s)
+
+    UNMISTAKABLE_CONF = 0.6
+
+    def _unmistakable(self, cand, tr):
+        """A play the cycle check may not overrule: a spell's hit, or a whole group seen landing together.
+        (A single troop may be a look-alike named wrong - a knight called a mini pekka - which the cycle check
+        rightly catches.)"""
+        if cand.source == "hit":
+            return tr.conf >= self.UNMISTAKABLE_CONF
+        return GROUP.get(cand.card, 1) > 1 and len(cand.units) >= GROUP[cand.card]
 
     def _rival_kind(self, tr):
         """Another kind of red troop the detector sees on the same spot more often (one unit, two names)."""

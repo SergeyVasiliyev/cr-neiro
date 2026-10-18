@@ -85,14 +85,34 @@ BARS = {
 }
 
 
+#  The opponent's bars sit lower than BARS says in recent recordings (princess towers ~20 px, the king ~12:
+#  video31), maybe a game update; ours did not move. A bar is looked for this far below (and a little above).
+BAR_SEARCH = {"red": range(0, 36, 3), "blue": range(0, 1)}
+
+
 def bar_fraction(frame, name, scale=1.0):
     """HP fraction from a tower's bar, or None if the bar is not shown (destroyed tower, or a king
     tower that has not been hit yet). The bar fills from the left (pink for the opponent, light blue
     for us); the rest of the bar is dark."""
+    frac, _ = bar_and_shift(frame, name, scale)
+    return frac
+
+
+def bar_and_shift(frame, name, scale=1.0):
+    """(HP fraction, rows below BARS where the bar was found) or (None, 0)."""
+    for dy in BAR_SEARCH[name.split("_")[0]]:
+        frac = _bar_at(frame, name, scale, dy)
+        if frac is not None:
+            return frac, dy
+    return None, 0
+
+
+def _bar_at(frame, name, scale, dy):
     x0, x1, rows = BARS[name]
     xa, xb = int(x0 * scale), int(x1 * scale)
     fracs = []
     for row in rows:
+        row += dy
         seg = cv2.cvtColor(frame[int(row * scale):int(row * scale) + 1, xa:xb], cv2.COLOR_BGR2HSV)[0].astype(int)
         h, s, v = seg[:, 0], seg[:, 1], seg[:, 2]
         if name.startswith("red"):
@@ -146,10 +166,11 @@ class NumberReader:
     def read_tower_hp(self, frame, name, max_hp, scale=1.0):
         """(hp, exact) for a tower: the number if it agrees with the HP bar, else an estimate from the
         bar (exact=False); (None, False) when no bar is shown (destroyed tower, untouched king)."""
-        frac = bar_fraction(frame, name, scale)
+        frac, dy = bar_and_shift(frame, name, scale)
         if frac is None:
             return None, False
-        digits, score = self.read_digits(self.region(frame, name, scale))
+        x0, y0, x1, y1 = REGIONS[name]  # the number moves with its bar
+        digits, score = self.read_digits(self.region(frame, (x0, y0 + dy, x1, y1 + dy), scale))
         if digits and score >= self.MIN_SCORE and len(digits) <= 4:
             hp = int(digits)
             if hp <= max_hp and abs(hp / max_hp - frac) <= self.BAR_TOLERANCE:

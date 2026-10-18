@@ -19,6 +19,16 @@ constexpr double kCollisionStiffness = 0.5;
 constexpr double kGoldenAngle = 2.39996322972865332;
 // How much closer (tiles) the other bridge must be before a troop on its own half switches lanes.
 constexpr double kLaneHysteresis = 1.0;
+// How far off a bridge's centre line a troop may cross (tiles; see next_waypoint).
+constexpr double kBridgeLine = 0.45;
+// Same-side troops nearly in line (|sideways part of the push| below this) get this much sideways push too,
+// when the one in front has stopped to fight.
+constexpr double kFollowSlipBelow = 0.15;
+constexpr double kFollowSlip = 0.35;
+// Following a slower troop of one's side (follow_step): it is in the way when it is ahead, at most this far
+// past touching, and off the line by less than this share of the two radii.
+constexpr double kFollowGap = 0.3;
+constexpr double kFollowWidth = 0.95;
 
 double edge_gap(const Entity& a, const Entity& b) {
     return distance(a.pos, b.pos) - a.radius - b.radius;
@@ -542,6 +552,10 @@ Vec2 Battle::next_waypoint(const Entity& e, Vec2 dst, int bridge) const {
     const int to = bank(dst.y);
     if (from == to) return dst;
 
+    // Troops don't all funnel through a bridge's centre: they step on it on the side they come from and keep
+    // that line across. Over 549 crossings in 47 recordings (tools/bridge_check.py): coming 1 tile off-centre
+    // they cross ~0.35 off, from further out ~0.5-0.6; 90% of crossings within 0.6 of the centre.
+    auto lane_x = [&](double bx) { return std::clamp(e.pos.x, bx - kBridgeLine, bx + kBridgeLine); };
     if (from == 0) {
         // On a bridge: keep walking straight to the bank the destination is on.
         double bx = a.bridge_x.front();
@@ -549,7 +563,7 @@ Vec2 Battle::next_waypoint(const Entity& e, Vec2 dst, int bridge) const {
             if (std::abs(x - e.pos.x) < std::abs(bx - e.pos.x)) bx = x;
         }
         const double exit_y = to > 0 ? a.river_max_y + 1e-6 : a.river_min_y - 1e-6;
-        return {bx, exit_y};
+        return {lane_x(bx), exit_y};
     }
 
     // On a bank with the destination across the river: head for the entrance of the given bridge,
@@ -565,7 +579,7 @@ Vec2 Battle::next_waypoint(const Entity& e, Vec2 dst, int bridge) const {
             }
         }
     }
-    return {bx, from < 0 ? a.river_min_y : a.river_max_y};
+    return {lane_x(bx), from < 0 ? a.river_min_y : a.river_max_y};
 }
 
 void Battle::update_troop(Entity& e, int dt) {
@@ -587,8 +601,32 @@ void Battle::update_troop(Entity& e, int dt) {
     } else {
         // Marching on a building from our own half follows the lane; chasing troops takes the shortest way.
         const int bridge = target->is_building() && !e.air && on_own_bank(e) ? e.lane : -1;
-        e.pos = move_towards(e.pos, next_waypoint(e, target->pos, bridge), e.speed * dt / 1000.0);
+        const Vec2 waypoint = next_waypoint(e, target->pos, bridge);
+        e.pos = move_towards(e.pos, waypoint, follow_step(e, waypoint, e.speed * dt / 1000.0, dt));
     }
+}
+
+double Battle::follow_step(const Entity& e, Vec2 waypoint, double step, int dt) const {
+    // A troop walking into the back of a slower one of its side, on its way (even a little off to the side),
+    // follows it at its pace instead of getting past: troops put behind a giant stack up behind it and push
+    // together - pushes in the game are built on this. Once the one in front stops to fight, the troop goes
+    // round it (resolve_collisions).
+    const Vec2 to = waypoint - e.pos;
+    const double len = to.length();
+    if (len < 1e-9) return step;
+    const Vec2 dir = to * (1.0 / len);
+    for (const auto& l : entities_) {
+        if (&l == &e || l.team != e.team || l.is_building() || !l.alive() || l.air != e.air) continue;
+        if (l.locked || l.speed >= e.speed) continue;
+        const Vec2 rel = l.pos - e.pos;
+        const double along = rel.x * dir.x + rel.y * dir.y;
+        const double side = std::abs(rel.x * dir.y - rel.y * dir.x);
+        const double contact = e.radius + l.radius;
+        if (along <= 0.0 || along > contact + kFollowGap || side >= contact * kFollowWidth) continue;
+        const double front_moves = l.deploy_ms_left > 0 ? 0.0 : l.speed * dt / 1000.0;
+        step = std::min(step, std::max(0.0, along - contact) + front_moves);
+    }
+    return step;
 }
 
 void Battle::update_tower(Entity& e, int dt) {
@@ -724,7 +762,15 @@ void Battle::resolve_collisions() {
             const double overlap = p.radius + q.radius - dist;
             if (overlap <= 0.0) continue;
             // Units spawned on the exact same spot separate sideways, deterministically.
-            const Vec2 n = dist > 1e-9 ? d * (1.0 / dist) : Vec2{(i + j) % 2 ? 1.0 : -1.0, 0.0};
+            Vec2 n = dist > 1e-9 ? d * (1.0 / dist) : Vec2{(i + j) % 2 ? 1.0 : -1.0, 0.0};
+            // Two of a side in line, the one in front stopped to fight (a giant at the tower): pushed straight
+            // along the line the one behind would wait there forever; in the game it goes round. (While the one
+            // in front still walks, the one behind follows it instead: update_troop.)
+            if (p.team == q.team && (p.locked || q.locked) && std::abs(n.x) < kFollowSlipBelow) {
+                const double side = std::abs(d.x) > 1e-3 ? (d.x > 0 ? 1.0 : -1.0) : ((i + j) % 2 ? 1.0 : -1.0);
+                n = Vec2{n.x + side * kFollowSlip, n.y};
+                n = n * (1.0 / n.length());
+            }
             const double push = overlap * kCollisionStiffness;
             const double total = p.mass + q.mass;
             p.pos = p.pos - n * (push * q.mass / total);

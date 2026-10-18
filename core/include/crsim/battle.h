@@ -214,6 +214,8 @@ private:
     void update_lane(Entity& e) const;
     // bridge >= 0 forces that bridge when the river has to be crossed.
     Vec2 next_waypoint(const Entity& e, Vec2 dst, int bridge = -1) const;
+    // How far a walking troop may go this tick, held behind a slower troop of its side in its way.
+    double follow_step(const Entity& e, Vec2 waypoint, double step, int dt) const;
     void attack_tick(Entity& e, Entity& target, int dt);
     void fire(Entity& e, Entity& target);
     void apply_damage(Entity& target, int damage, int tower_damage_pct);

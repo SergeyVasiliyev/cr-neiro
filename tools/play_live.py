@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.join(ROOT, "python"))
 import crsim  # noqa: E402
 from crsim_env import load_data  # noqa: E402
 from live.device import Device, measure  # noqa: E402
+from live.finisher import finishing_spell  # noqa: E402
 from live.window import WindowScreen  # noqa: E402
 from live.session import BLUE, LiveMatch  # noqa: E402
 from perception.layout import Layout  # noqa: E402
@@ -51,8 +52,13 @@ class PolicyBrain:
         self.key_spots = bool(ckpt.get("key_spots", False))  # the action space it was trained with
         # ... and the rhythm: it decided every decision_ticks x 50 ms in training
         self.decide_every = ckpt.get("args", {}).get("decision_ticks", 6) * 0.05
+        self.finisher = False  # --finisher: a hard rule; the policies are to learn it (endgame starts in train_v7)
+        self.data = crsim.GameData.load(os.path.join(ROOT, "data"))
 
     def __call__(self, battle):
+        finish = finishing_spell(battle, BLUE, self.data) if self.finisher else None
+        if finish is not None:  # a tower a spell in hand surely destroys: the policy never learned to take it
+            return finish
         action = int(self.player(crsim.rl.encode(battle, BLUE, key_spots=self.key_spots)))
         if action == 0:
             return None
@@ -206,6 +212,8 @@ def main():
     p.add_argument("--preview-every", type=int, default=3, help="draw the preview window every N frames")
     p.add_argument("--decide-every", type=float, default=None,
                    help="seconds between brain decisions (default: as the policy was trained, else 0.3)")
+    p.add_argument("--finisher", action="store_true",
+                   help="hard rule: cast a spell in hand that surely destroys an enemy tower (python/live/finisher.py)")
     p.add_argument("--no-detector", action="store_true", help="no unit detection (the opponent stays invisible)")
     p.add_argument("--weights", default=None, help="unit detector weights (default: the latest)")
     p.add_argument("--serial", default=None, help="adb device (default: the first emulator)")
@@ -244,6 +252,8 @@ def main():
     hp_reader = UnitHpReader()
     match = LiveMatch(data)
     brain = make_brain(args.brain)
+    if args.finisher and isinstance(brain, PolicyBrain):
+        brain.finisher = True
     if args.decide_every is None:
         args.decide_every = getattr(brain, "decide_every", 0.3)
     playing = args.act

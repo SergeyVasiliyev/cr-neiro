@@ -90,6 +90,8 @@ def parse_args():
     p.add_argument("--bank-cap", type=float, default=9.0)
     p.add_argument("--delay", type=int, nargs=2, default=(2, 5), help="ticks (50 ms) a move lands after the decision")
     p.add_argument("--noise", type=float, nargs=2, default=(0.03, 0.3), help="miss chance, position jitter (tiles)")
+    p.add_argument("--endgame", type=float, default=0.0,
+                   help="share of episodes starting late with towers at random HP (finishing, defending, overtime)")
     p.add_argument("--pool", nargs="*", default=POOL)
     p.add_argument("--bench", nargs="*", default=BENCH, help="opponents of the greedy evaluations")
     p.add_argument("--snapshot-every", type=float, default=2e6, help="learner steps between own snapshots")
@@ -155,7 +157,7 @@ def main():
     reward = ce.make_reward(args.reward_win, args.reward_crown, args.reward_tower, args.reward_leak,
                             args.reward_trade, args.trade_floor, True, args.elixir_bank, args.bank_cap)
     common = dict(decision_ticks=args.decision_ticks, reward=reward, num_threads=args.threads, key_spots=True,
-                  delay_ticks=tuple(args.delay), obs_noise=tuple(args.noise))
+                  delay_ticks=tuple(args.delay), obs_noise=tuple(args.noise), endgame_share=args.endgame)
     S, P = args.self_envs, args.pool_envs
     self_env = ce.VecEnv(data, [(deck, deck)], num_envs=S, bots=("noop", "noop"), seed=args.seed * 100 + 1, **common)
     pool_env = ce.VecEnv(data, [(deck, deck)], num_envs=P, bots=("noop", "noop"), seed=args.seed * 100 + 2, **common)
@@ -270,8 +272,11 @@ def main():
         for opp in args.bench:
             wr, style = evaluate(latest, os.path.join(ROOT, opp) if opp not in ce.BOT_KINDS else opp, args, games)
             parts.append(f"{opp.replace('runs/', '').replace('/latest.pt', '').replace('.pt', '')} {wr:.0f}%")
+        fin = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "finisher_test.py"), latest], cwd=ROOT,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True).stdout
+        m = re.search(r"finishes (\d+/\d+)", fin)
         log(f">>> eval {tag} at {global_step / 1e6:.1f}M ({time.strftime('%H:%M')}): " + ", ".join(parts)
-            + f" | style: {style}")
+            + f" | overtime finish {m.group(1) if m else '?'} | style: {style}")
 
     while progress < 1.0:
         iteration += 1

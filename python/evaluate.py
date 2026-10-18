@@ -4,6 +4,7 @@
     .venv\\Scripts\\python.exe python\\evaluate.py --model runs\\a\\latest.pt --opponent runs\\b\\latest.pt
 """
 import argparse
+import math
 import os
 import time
 
@@ -26,26 +27,34 @@ def main():
     p.add_argument("--decision-ticks", type=int, default=10)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seed", type=int, default=12345)
+    p.add_argument("--native-rhythm", action="store_true",
+                   help="each policy decides at the rhythm it was trained at (its checkpoint's decision_ticks), "
+                        "the match stepping at their greatest common divisor; --decision-ticks is then ignored")
     args = p.parse_args()
 
     data = ce.load_data()
     deck = ce.parse_deck(args.deck, data)
     opp_deck = ce.parse_deck(args.opp_deck, data) if args.opp_deck else deck
-    players, key_spots = [], []
+    players, key_spots, rhythm = [], [], []
     for spec in (args.model, args.opponent):
         if spec in ce.BOT_KINDS:
             players.append(spec)
             key_spots.append(False)
+            rhythm.append(args.decision_ticks)
         elif os.path.exists(spec):
             net, ckpt = load_policy(spec, args.device)
             players.append(net)
             key_spots.append(bool(ckpt.get("key_spots", False)))  # the action space each policy was trained on
+            rhythm.append(int(ckpt.get("args", {}).get("decision_ticks", args.decision_ticks)))
         else:
             raise SystemExit(f"{spec!r} is neither a bot name nor a checkpoint file")
+    step_ticks = math.gcd(*rhythm) if args.native_rhythm else args.decision_ticks
+    every = [r // step_ticks if args.native_rhythm else 1 for r in rhythm]  # a player decides every n-th step
 
     bots = tuple(pl if isinstance(pl, str) else "noop" for pl in players)
     env = ce.VecEnv(data, [(deck, opp_deck)], num_envs=min(args.envs, args.games), bots=bots,
-                    decision_ticks=args.decision_ticks, seed=args.seed, key_spots=tuple(key_spots))
+                    decision_ticks=step_ticks, seed=args.seed, key_spots=tuple(key_spots))
+    step_no = 0
     results, crowns, lengths = [], [], []
     started = env.num_envs
     active = np.ones(env.num_envs, dtype=bool)  # envs still allowed to finish an episode we count
@@ -59,9 +68,13 @@ def main():
         actions = np.full((env.num_envs, 2), ce.BOT_ACTION, dtype=np.int32)
         for side, pl in enumerate(players):
             if not isinstance(pl, str):
+                if step_no % every[side]:  # not this player's moment to decide: it waits
+                    actions[:, side] = 0
+                    continue
                 obs = obs_to_torch(env.obs(side), args.device)
                 with torch.no_grad():
                     actions[:, side] = pl.act(obs, greedy=args.greedy)[0].cpu().numpy()
+        step_no += 1
         elixir = env.obs(0)["global"][:, 4] * 10.0
         hand = env.obs(0)["hand"].copy()
         _, done = env.step(actions)
@@ -73,7 +86,7 @@ def main():
             w = int(env.winner[i])
             results.append(1.0 if w == 0 else (0.5 if w == 2 else 0.0))
             crowns.append((int(env.crowns[i, 0]), int(env.crowns[i, 1])))
-            lengths.append(int(env.episode_steps[i]) * args.decision_ticks * 50 / 1000)
+            lengths.append(int(env.episode_steps[i]) * step_ticks * 50 / 1000)
             if started >= args.games:
                 active[i] = False
             started += 1

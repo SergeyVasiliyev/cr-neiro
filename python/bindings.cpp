@@ -325,7 +325,7 @@ PYBIND11_MODULE(crsim, m) {
                          int decision_ticks, uint64_t seed, const py::handle& blue_bot, const py::handle& red_bot,
                          bool observe_enemy_elixir, const RewardConfig& reward, int num_threads, bool auto_reset,
                          const py::object& key_spots, std::pair<int, int> delay_ticks,
-                         std::pair<double, double> obs_noise) {
+                         std::pair<double, double> obs_noise, double endgame_share) {
                  BatchEnvConfig cfg;
                  cfg.num_envs = num_envs;
                  cfg.num_threads = num_threads;
@@ -348,6 +348,7 @@ PYBIND11_MODULE(crsim, m) {
                  cfg.delay_ticks_max = delay_ticks.second;
                  cfg.obs_miss_enemy = obs_noise.first;
                  cfg.obs_jitter = obs_noise.second;
+                 cfg.endgame_share = endgame_share;
                  return std::make_unique<BatchEnv>(data, std::move(cfg));
              }),
              py::arg("data"), py::arg("matchups"), py::arg("num_envs") = 1, py::arg("decision_ticks") = 10,
@@ -355,8 +356,10 @@ PYBIND11_MODULE(crsim, m) {
              py::arg("observe_enemy_elixir") = true, py::arg("reward") = RewardConfig{}, py::arg("num_threads") = 0,
              py::arg("auto_reset") = true, py::arg("key_spots") = false,
              py::arg("delay_ticks") = std::pair<int, int>{0, 0}, py::arg("obs_noise") = std::pair<double, double>{0.0, 0.0},
+             py::arg("endgame_share") = 0.0,
              "delay_ticks: (min, max) ticks a move lands after the decision; "
-             "obs_noise: (chance to miss an enemy troop, position jitter in tiles)")
+             "obs_noise: (chance to miss an enemy troop, position jitter in tiles); "
+             "endgame_share: episodes that start late, towers at random HP (see BatchEnvConfig)")
         .def("reset", &BatchEnv::reset)
         .def(
             "set_bot",

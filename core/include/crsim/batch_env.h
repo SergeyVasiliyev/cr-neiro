@@ -68,6 +68,13 @@ struct BatchEnvConfig {
     // enemy troops seen up to this many tiles off.
     double obs_miss_enemy = 0.0;
     double obs_jitter = 0.0;
+    // Endgame starts: this share of episodes begins late (a random time in [from, to) ms, nobody having played
+    // so far: 0:0), the princess towers at random HP (a quarter within a spell's reach, 30-300 HP, a quarter
+    // low), random elixir, a random point in the cycle - to learn what full games rarely show: finishing a low
+    // tower (or not, when the spell would land too late), defending one, overtime.
+    double endgame_share = 0.0;
+    int endgame_from_ms = 140000;
+    int endgame_to_ms = 280000;
 };
 
 class BatchEnv {
@@ -146,6 +153,7 @@ private:
     void elixir_losses(Slot& s, double lost[2]) const;
 
     void reset_slot(int i);
+    void start_endgame(Slot& s);
     void step_slot(int i, const int32_t* actions);
     void write_obs(int i);
     int tower_hp(const Battle& b, Team team) const;

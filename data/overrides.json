@@ -1,6 +1,47 @@
 {
   "_comment": "Hand-made corrections applied on top of the imported cards.json / towers.json when loading (JSON merge patch). Re-running the importer does not touch this file. Every entry says why. Example: \"cards\": {\"fireball\": {\"_why\": \"...\", \"spell\": {\"projectile_speed\": 15.0}}}",
-  "cards": {},
+  "cards": {
+    "giant": {
+      "_why": "Walks 0.919 tiles/s in the game (median of 28249 one-second walking windows over 47 recordings, tools/speed_check.py), 0.862 in the simulator from speed 45; the twin kept pulling giants 0.2-0.4 tiles ahead (tools/sim_check.py). 47 x 1.175 / 60 = 0.920.",
+      "unit": {
+        "speed": 47,
+        "deploy_time_ms": 800
+      }
+    },
+    "mini_pekka": {
+      "_why": "First hit ~0.65 s after coming into reach, not the file's 1.1 s: the enemy's HP bar shows up 0.75 s after contact over 250 meetings in 49 recordings (tools/unit_first_hit.py; knights, 0.7 s in the file, measure 0.80 the same way: ~0.1 s of reading lag), 0.60 s in the 1v1 test (video31). deploy_time_ms: see knight.",
+      "unit": {
+        "deploy_time_ms": 800,
+        "attack": {
+          "first_hit_ms": 700
+        }
+      }
+    },
+    "knight": {
+      "_why": "deploy_time_ms 800, not 1000 (all six troops): troops start walking ~0.2 s sooner after they show up than the simulator had them - 0.93-1.10 s to 0.3 tiles walked over 49 recordings vs 1.20-1.35 (tools/start_walk_check.py), and in the walking test (video32, tools/walk_test_check.py) mini pekka 0.93 vs 1.15, musketeer 1.07 vs 1.25, giant 1.07 vs 1.30, the game's troops 0.1-0.5 tiles ahead along the way.",
+      "unit": {
+        "deploy_time_ms": 800
+      }
+    },
+    "archers": {
+      "_why": "deploy_time_ms: see knight.",
+      "unit": {
+        "deploy_time_ms": 800
+      }
+    },
+    "minions": {
+      "_why": "deploy_time_ms: see knight.",
+      "unit": {
+        "deploy_time_ms": 800
+      }
+    },
+    "musketeer": {
+      "_why": "deploy_time_ms: see knight.",
+      "unit": {
+        "deploy_time_ms": 800
+      }
+    }
+  },
   "towers": {
     "_why": "Level 11 as in a real friendly battle. HP: full towers show 3052 / 4824 (raw/videos/video1.mp4). Damage 109 per shot: single hits seen on minions' HP bars over 9 recordings are 110-120 HP, none near 128 (the importer's value, scaled like its HP by 3584/3052 = 1.174 too much: 128 / 1.174 = 109). The king tower's 109 is the same table value, not measured on its own. The importer's rarity multipliers do not apply to towers; their table is not in csv_logic. King activation_ms 3500: in raw/videos/video10.mp4 the left princess tower falls at 39.6 s, the king stands up and takes out his cannon, first shot ~43.6 s (3.5 s + its 0.5 s first hit); before that a giant next to it took no damage.",
     "princess": {
