@@ -8,5 +8,5 @@ rem Stop: close this window (best.pt stays the best so far); started again, it g
 cd /d "%~dp0.."
 set HOURS=%~1
 if "%HOURS%"=="" set HOURS=20
-start "stay awake" /min powershell -NoProfile -ExecutionPolicy Bypass -File scripts\stay_awake.ps1 -Log raw\train_v7e_log.txt -Until "=== all done" -Hours 24
+start "stay awake" /min powershell -NoProfile -ExecutionPolicy Bypass -File scripts\stay_awake.ps1 -Log raw\train_v7e_log.txt -Until "=== gated training done" -Hours 24
 ".venv\Scripts\python.exe" tools\train_gated.py --name v7e --start runs\v7c\step_9M.pt --hours %HOURS%

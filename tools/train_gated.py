@@ -6,7 +6,7 @@ drift into beating some opponents while losing to others (v7d: 81% vs ppo_v6 but
     .venv\\Scripts\\python.exe tools\\train_gated.py --start runs\\v7c\\step_9M.pt --hours 20
 
 Everything in runs/<name> (best.pt = the best so far, chunk_N.pt = each chunk's result); chunk runs in
-runs/<name>_cN. Progress: raw/train_<name>_log.txt (">>>" lines), ends with "=== all done". Stopping at any time
+runs/<name>_cN. Progress: raw/train_<name>_log.txt (">>>" lines), ends with "=== gated training done". Stopping at any time
 is safe; started again it goes on from best.pt.
 """
 import argparse
@@ -22,7 +22,9 @@ PY = sys.executable
 DECK = "knight,archers,minions,arrows,fireball,giant,mini_pekka,musketeer"
 # v7c's settings without endgame starts: decisions every 0.2 s, moves landing 0.15-0.45 s later, the reward mostly
 # the result, a light pull to the chunk's start
-CHUNK_ARGS = ["--decision-ticks", "4", "--gamma", "0.99933", "0.99332", "0.99332", "--lam", "0.966",
+# Learning rate at most 3e-5, as in ppo_v6's gated chunks (promoted twice running): v7e's first chunk at 2e-4
+# (the KL target pushing it up to 5e-4) lost to where it started 18% - a strong policy drifts at such rates.
+CHUNK_ARGS = ["--lr", "3e-5", "--lr-range", "1e-5", "3e-5", "--decision-ticks", "4", "--gamma", "0.99933", "0.99332", "0.99332", "--lam", "0.966",
               "--delay", "3", "9", "--endgame", "0", "--anchor-coef", "0.02", "0", "--anchor-until", "0.3",
               "--w-shaping", "0.1", "0.1", "--w-style", "0.3", "0.3", "--ent-place", "0.8", "0.6", "--anneal", "0.25",
               "--eval-minutes", "999", "--bench", "heuristic", "--final-games", "50"]
@@ -107,7 +109,9 @@ def main():
             best_panel = cand_panel
         log(f">>> chunk {chunk}: vs best {vs_best:.1%}, panel avg {avg_c:.1%} (best {avg_b:.1%}) -> "
             f"{'NEW BEST' if promoted else 'kept the best'} | {detail}  ({time.strftime('%H:%M')})")
-    log(f"=== all done {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    # (not "=== all done": each chunk's own run prints that into this log too, and the keep-awake helper waits for
+    # the marker of the whole run)
+    log(f"=== gated training done {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 if __name__ == "__main__":
