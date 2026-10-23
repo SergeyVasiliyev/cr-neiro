@@ -35,14 +35,19 @@ def obs_to_torch(obs, device):
 class PolicyNet(nn.Module):
     """n_values > 1: one value head per reward part (result, shaping, style), value is then (B, n_values)."""
 
-    def __init__(self, vocab_size, d_model=128, n_layers=2, n_heads=4, grid_channels=32, trunk=256, n_values=1):
+    def __init__(self, vocab_size, d_model=128, n_layers=2, n_heads=4, grid_channels=32, trunk=256, n_values=1,
+                 entity_features=None):
+        """entity_features: how many per-unit features it reads (default: all the encoder gives). Newer features
+        are appended, so a net trained on fewer reads the first ones and ignores the rest."""
         super().__init__()
+        entity_features = entity_features or crsim.rl.ENTITY_FEATURES
         self.config = dict(vocab_size=vocab_size, d_model=d_model, n_layers=n_layers, n_heads=n_heads,
-                           grid_channels=grid_channels, trunk=trunk, n_values=n_values)
+                           grid_channels=grid_channels, trunk=trunk, n_values=n_values,
+                           entity_features=entity_features)
         d, c, w = d_model, grid_channels, trunk
         self.n_values = n_values
         self.token_emb = nn.Embedding(vocab_size, d)
-        self.entity_in = nn.Linear(crsim.rl.ENTITY_FEATURES, d)
+        self.entity_in = nn.Linear(entity_features, d)
         layer = nn.TransformerEncoderLayer(d, n_heads, dim_feedforward=2 * d, dropout=0.0, batch_first=True,
                                            norm_first=True)
         self.encoder = nn.TransformerEncoder(layer, n_layers, enable_nested_tensor=False)
@@ -83,7 +88,7 @@ class PolicyNet(nn.Module):
     def forward(self, obs):
         ent_mask = obs["entity_mask"]
         b, n = ent_mask.shape
-        x = self.token_emb(obs["entity_token"]) + self.entity_in(obs["entities"])
+        x = self.token_emb(obs["entity_token"]) + self.entity_in(obs["entities"][..., :self.entity_in.in_features])
         x = self.encoder(x, src_key_padding_mask=~ent_mask)
         m = ent_mask.unsqueeze(-1).float()
         pooled_mean = (x * m).sum(1) / m.sum(1).clamp(min=1.0)
@@ -131,10 +136,20 @@ def save_checkpoint(path, net, optimizer=None, **meta):
                 "optimizer": optimizer.state_dict() if optimizer else None, **meta}, path)
 
 
-def load_policy(path, device="cpu"):
+def load_policy(path, device="cpu", entity_features=None):
+    """entity_features: widen an older net to read this many per-unit features, the new ones starting at zero
+    weight (it plays exactly as before until trained)."""
     ckpt = torch.load(path, map_location=device, weights_only=False)
-    net = PolicyNet(**ckpt["config"]).to(device)
-    net.load_state_dict(ckpt["model"])
+    config = dict(ckpt["config"])
+    trained = ckpt["model"]["entity_in.weight"].shape[1]  # nets saved before the setting existed
+    config["entity_features"] = max(trained, entity_features or 0)
+    net = PolicyNet(**config).to(device)
+    state = dict(ckpt["model"])
+    if config["entity_features"] > trained:
+        w = torch.zeros_like(net.entity_in.weight)
+        w[:, :trained] = state["entity_in.weight"]
+        state["entity_in.weight"] = w
+    net.load_state_dict(state)
     net.eval()
     return net, ckpt
 
@@ -142,10 +157,16 @@ def load_policy(path, device="cpu"):
 class PolicyPlayer:
     """Wraps a trained network as a callable(obs_dict) -> action for a single match."""
 
-    def __init__(self, net, device="cpu", greedy=False):
-        self.net, self.device, self.greedy = net, device, greedy
+    def __init__(self, net, device="cpu", greedy=False, temperature=None):
+        """temperature: sample at it (< 1 sharper than trained) instead of greedy / plain sampling."""
+        self.net, self.device, self.greedy, self.temperature = net, device, greedy, temperature
 
     def __call__(self, obs):
         batch = obs_to_torch({k: v[None] for k, v in obs.items()}, self.device)
-        action, _ = self.net.act(batch, greedy=self.greedy)
+        if self.temperature is not None:
+            with torch.no_grad():
+                logits = self.net(batch)[0].float() / max(self.temperature, 1e-3)
+            return int(torch.distributions.Categorical(logits=logits).sample()[0])
+        with torch.no_grad():
+            action, _ = self.net.act(batch, greedy=self.greedy)
         return int(action[0])

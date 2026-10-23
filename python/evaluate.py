@@ -27,6 +27,11 @@ def main():
     p.add_argument("--decision-ticks", type=int, default=10)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seed", type=int, default=12345)
+    p.add_argument("--model-temp", type=float, default=None,
+                   help="the model (blue) samples its moves at this temperature (1 = as trained, < 1 sharper) while "
+                        "the opponent plays as --greedy says")
+    p.add_argument("--opp-temp", type=float, default=None,
+                   help="the opponent (a checkpoint) samples at this temperature; with --model-temp 0.5 both play as live")
     p.add_argument("--native-rhythm", action="store_true",
                    help="each policy decides at the rhythm it was trained at (its checkpoint's decision_ticks), "
                         "the match stepping at their greatest common divisor; --decision-ticks is then ignored")
@@ -44,7 +49,7 @@ def main():
         elif os.path.exists(spec):
             net, ckpt = load_policy(spec, args.device)
             players.append(net)
-            key_spots.append(bool(ckpt.get("key_spots", False)))  # the action space each policy was trained on
+            key_spots.append(int(ckpt.get("key_spots", 0)))  # the action space each policy was trained on
             rhythm.append(int(ckpt.get("args", {}).get("decision_ticks", args.decision_ticks)))
         else:
             raise SystemExit(f"{spec!r} is neither a bot name nor a checkpoint file")
@@ -73,7 +78,12 @@ def main():
                     continue
                 obs = obs_to_torch(env.obs(side), args.device)
                 with torch.no_grad():
-                    actions[:, side] = pl.act(obs, greedy=args.greedy)[0].cpu().numpy()
+                    temp = args.model_temp if side == 0 else args.opp_temp
+                    if temp is not None:
+                        logits = pl(obs)[0].float() / max(temp, 1e-3)
+                        actions[:, side] = torch.distributions.Categorical(logits=logits).sample().cpu().numpy()
+                    else:
+                        actions[:, side] = pl.act(obs, greedy=args.greedy)[0].cpu().numpy()
         step_no += 1
         elixir = env.obs(0)["global"][:, 4] * 10.0
         hand = env.obs(0)["hand"].copy()

@@ -22,6 +22,9 @@ struct RewardConfig {
     double crown = 0.0;         // per crown taken (minus per crown lost)
     double tower_damage = 0.0;  // per one side's full tower HP worth of damage dealt (minus taken)
     double elixir_leak = 0.0;   // penalty per elixir wasted at max elixir
+    // ... only for the leak the opponent does not match (both sitting at 10 and waiting is fine, as pros
+    // open a match): the penalty is on my leak minus theirs, and their leak beyond mine is a gain
+    bool leak_relative = false;
     // Elixir trades, the heart of the game: per elixir worth of the opponent's troops lost, minus our own.
     // A troop is worth its card's cost split over the troops it makes (an archer 1.5, a giant 5). Damage
     // takes it down only to trade_floor of that (a Musketeer left at 10% HP still shoots as hard as a
@@ -58,7 +61,7 @@ struct BatchEnvConfig {
     std::vector<Matchup> matchups;  // one is drawn uniformly at every reset
     BotKind bots[2] = {BotKind::Heuristic, BotKind::Heuristic};  // [blue, red], used on kBotAction
     rl::ObsConfig obs;
-    bool key_spots[2] = {false, false};  // per side (blue, red): act on key spots only (obs.key_spots is ignored)
+    int key_spots[2] = {0, 0};  // per side (blue, red): rl::ObsConfig::key_spots levels (obs.key_spots is ignored)
     RewardConfig reward;
     // A move lands this many ticks after the decision (uniform; may be past the next decision: meanwhile that
     // side can only wait), like the live bot's touches.
@@ -68,6 +71,11 @@ struct BatchEnvConfig {
     // enemy troops seen up to this many tiles off.
     double obs_miss_enemy = 0.0;
     double obs_jitter = 0.0;
+    // Enemy elixir as live (rl::ObsConfig::enemy_elixir_offset): per match and side an offset drawn from
+    // N(elixir_noise_mean, elixir_noise_sd), plus elixir_noise_jitter per observation. All 0: exact.
+    double elixir_noise_mean = 0.0;
+    double elixir_noise_sd = 0.0;
+    double elixir_noise_jitter = 0.0;
     // Endgame starts: this share of episodes begins late (a random time in [from, to) ms, nobody having played
     // so far: 0:0), the princess towers at random HP (a quarter within a spell's reach, 30-300 HP, a quarter
     // low), random elixir, a random point in the cycle - to learn what full games rarely show: finishing a low
@@ -92,6 +100,9 @@ public:
     void step(const int32_t* actions);
     // The scripted bot for one side of one env, from its next episode on (instead of config().bots).
     void set_bot(int env, int side, BotKind kind);
+    // The placements one side of one env may use (rl::ObsConfig::key_spots level), instead of the config's: a
+    // pool opponent trained on another set of spots keeps to its own.
+    void set_key_spots(int env, int side, int level);
 
     int num_envs() const { return cfg_.num_envs; }
     const BatchEnvConfig& config() const { return cfg_; }
@@ -128,8 +139,10 @@ private:
         std::unique_ptr<Battle> battle;
         std::unique_ptr<Bot> bots[2];
         int bot_kind[2] = {-1, -1};  // set_bot: BotKind for the next episodes, -1 = config's
+        int key_spots[2] = {-1, -1};  // set_key_spots: the level, -1 = config's
         std::mt19937_64 rng;
         std::mt19937_64 obs_rng;     // observation noise only, so it never changes how games go
+        double elixir_offset[2] = {0.0, 0.0};  // this match's enemy elixir offset per side (elixir_noise_*)
         // A move decided but not landed yet (delay_ticks): until it lands that side only waits, like the
         // live bot while its touches go through.
         struct Pending {

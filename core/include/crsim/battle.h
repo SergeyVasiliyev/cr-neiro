@@ -40,6 +40,9 @@ struct Entity {
     EntityId target = kNoEntity;
     int lane = -1;        // troops on their own half: index of the bridge (lane) they march along
     bool locked = false;  // in range and attacking `target`; won't retarget until it's lost
+    Vec2 heading{0.0, 0.0};  // troops: the way it walked last (unit length; zero before it first walks)
+    Vec2 knock{0.0, 0.0};    // the part of a knockback still to come; while knock_ms_left > 0 it neither walks nor hits
+    int knock_ms_left = 0;
     int attack_cd_ms = 0;
     bool active = true;  // king tower sleeps until a princess tower falls or it takes damage
     int play = -1;       // troops: which of its team's plays (PlayerState::plays index) it came from, -1 = none
@@ -216,12 +219,15 @@ private:
     Vec2 next_waypoint(const Entity& e, Vec2 dst, int bridge = -1) const;
     // How far a walking troop may go this tick, held behind a slower troop of its side in its way.
     double follow_step(const Entity& e, Vec2 waypoint, double step, int dt) const;
+    // Where to head instead, when a building (not the target) is in the way to the waypoint.
+    Vec2 steer_around_buildings(const Entity& e, Vec2 waypoint, const Entity* target) const;
     void attack_tick(Entity& e, Entity& target, int dt);
     void fire(Entity& e, Entity& target);
     void apply_damage(Entity& target, int damage, int tower_damage_pct);
     void apply_splash(Team source, Vec2 center, double radius, int damage, int tower_damage_pct,
                       const TargetRules& targets, double pushback = 0.0);
     void knock_back(Entity& e, Vec2 from, double distance) const;
+    void knocked(Entity& e, int dt) const;  // a tick of a knockback in progress
     void activate_king(Entity& king);
     void finish(std::optional<Team> winner);
 

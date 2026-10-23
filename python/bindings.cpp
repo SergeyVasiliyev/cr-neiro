@@ -3,6 +3,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <tuple>
+
 #include "crsim/batch_env.h"
 #include "crsim/battle.h"
 #include "crsim/bots.h"
@@ -25,7 +27,7 @@ BotKind bot_from(const py::handle& h) {
 }
 
 // Encodes one player's observation of a single Battle into fresh numpy arrays.
-py::dict encode_battle(const Battle& b, Team team, bool observe_enemy_elixir, bool key_spots) {
+py::dict encode_battle(const Battle& b, Team team, bool observe_enemy_elixir, int key_spots) {
     py::array_t<float> global(rl::kGlobalFeatures);
     py::array_t<float> entities({rl::kMaxEntities, rl::kEntityFeatures});
     py::array_t<int32_t> token(rl::kMaxEntities);
@@ -295,15 +297,16 @@ PYBIND11_MODULE(crsim, m) {
     rl_mod.attr("FIRST_CARD_TOKEN") = rl::kFirstCardToken;
     rl_mod.def("vocab_size", &rl::vocab_size, py::arg("data"));
     rl_mod.def("encode", &encode_battle, py::arg("battle"), py::arg("team"), py::arg("observe_enemy_elixir") = true,
-               py::arg("key_spots") = false);
+               py::arg("key_spots") = 0);
     rl_mod.def(
         "key_spot_cells",
-        [](const Battle& b, Team team) {
+        [](const Battle& b, Team team, bool tactical) {
             std::vector<int> troops, spells;
-            rl::key_spot_cells(b, team, troops, spells);
+            rl::key_spot_cells(b, team, troops, spells, tactical);
             return py::make_tuple(troops, spells);
         },
-        py::arg("battle"), py::arg("team"), "(troop cells, spell cells): the key spots, own frame");
+        py::arg("battle"), py::arg("team"), py::arg("tactical") = false,
+        "(troop cells, spell cells): the key spots, own frame (tactical: with the spots next to the troops)");
     rl_mod.def("apply_action", &rl::apply_action, py::arg("battle"), py::arg("team"), py::arg("action"));
     rl_mod.def("cell_position", &rl::cell_position, py::arg("battle"), py::arg("team"), py::arg("cell"));
 
@@ -313,6 +316,7 @@ PYBIND11_MODULE(crsim, m) {
         .def_readwrite("crown", &RewardConfig::crown)
         .def_readwrite("tower_damage", &RewardConfig::tower_damage)
         .def_readwrite("elixir_leak", &RewardConfig::elixir_leak)
+        .def_readwrite("leak_relative", &RewardConfig::leak_relative)
         .def_readwrite("elixir_trade", &RewardConfig::elixir_trade)
         .def_readwrite("trade_floor", &RewardConfig::trade_floor)
         .def_readwrite("spell_full_worth", &RewardConfig::spell_full_worth)
@@ -325,7 +329,8 @@ PYBIND11_MODULE(crsim, m) {
                          int decision_ticks, uint64_t seed, const py::handle& blue_bot, const py::handle& red_bot,
                          bool observe_enemy_elixir, const RewardConfig& reward, int num_threads, bool auto_reset,
                          const py::object& key_spots, std::pair<int, int> delay_ticks,
-                         std::pair<double, double> obs_noise, double endgame_share) {
+                         std::pair<double, double> obs_noise, double endgame_share,
+                         std::tuple<double, double, double> elixir_noise) {
                  BatchEnvConfig cfg;
                  cfg.num_envs = num_envs;
                  cfg.num_threads = num_threads;
@@ -336,10 +341,11 @@ PYBIND11_MODULE(crsim, m) {
                  cfg.bots[0] = bot_from(blue_bot);
                  cfg.bots[1] = bot_from(red_bot);
                  cfg.obs.observe_enemy_elixir = observe_enemy_elixir;
-                 if (py::isinstance<py::bool_>(key_spots)) {  // one setting for both sides, or (blue, red)
-                     cfg.key_spots[0] = cfg.key_spots[1] = key_spots.cast<bool>();
+                 // one level for both sides, or (blue, red); True / False count as 1 / 0
+                 if (py::isinstance<py::bool_>(key_spots) || py::isinstance<py::int_>(key_spots)) {
+                     cfg.key_spots[0] = cfg.key_spots[1] = key_spots.cast<int>();
                  } else {
-                     const auto both = key_spots.cast<std::pair<bool, bool>>();
+                     const auto both = key_spots.cast<std::pair<int, int>>();
                      cfg.key_spots[0] = both.first;
                      cfg.key_spots[1] = both.second;
                  }
@@ -349,22 +355,27 @@ PYBIND11_MODULE(crsim, m) {
                  cfg.obs_miss_enemy = obs_noise.first;
                  cfg.obs_jitter = obs_noise.second;
                  cfg.endgame_share = endgame_share;
+                 std::tie(cfg.elixir_noise_mean, cfg.elixir_noise_sd, cfg.elixir_noise_jitter) = elixir_noise;
                  return std::make_unique<BatchEnv>(data, std::move(cfg));
              }),
              py::arg("data"), py::arg("matchups"), py::arg("num_envs") = 1, py::arg("decision_ticks") = 10,
              py::arg("seed") = 0, py::arg("blue_bot") = "heuristic", py::arg("red_bot") = "heuristic",
              py::arg("observe_enemy_elixir") = true, py::arg("reward") = RewardConfig{}, py::arg("num_threads") = 0,
-             py::arg("auto_reset") = true, py::arg("key_spots") = false,
+             py::arg("auto_reset") = true, py::arg("key_spots") = 0,
              py::arg("delay_ticks") = std::pair<int, int>{0, 0}, py::arg("obs_noise") = std::pair<double, double>{0.0, 0.0},
-             py::arg("endgame_share") = 0.0,
+             py::arg("endgame_share") = 0.0, py::arg("elixir_noise") = std::tuple<double, double, double>{0.0, 0.0, 0.0},
              "delay_ticks: (min, max) ticks a move lands after the decision; "
              "obs_noise: (chance to miss an enemy troop, position jitter in tiles); "
-             "endgame_share: episodes that start late, towers at random HP (see BatchEnvConfig)")
+             "endgame_share: episodes that start late, towers at random HP (see BatchEnvConfig); "
+             "elixir_noise: (mean, spread) of a per-match offset of the enemy elixir seen, and its jitter per step")
         .def("reset", &BatchEnv::reset)
         .def(
             "set_bot",
             [](BatchEnv& env, int e, int side, const py::handle& kind) { env.set_bot(e, side, bot_from(kind)); },
             py::arg("env"), py::arg("side"), py::arg("kind"), "the scripted bot of one side, from the next episode on")
+        .def("set_key_spots", &BatchEnv::set_key_spots, py::arg("env"), py::arg("side"), py::arg("level"),
+             "the placements one side of one env may use (0 every tile, 1 key spots, 2 key + tactical spots), "
+             "-1 = the config's")
         .def("reset_env", &BatchEnv::reset_env, py::arg("env"))
         .def(
             "step",

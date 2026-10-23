@@ -25,7 +25,7 @@ def main():
     net, ck = load_policy(path, "cuda")
     player = PolicyPlayer(net, "cuda", greedy=True)
     ticks = ck.get("args", {}).get("decision_ticks", 6)
-    key_spots = bool(ck.get("key_spots", False))
+    key_spots = int(ck.get("key_spots", 0))
     won = total = 0
     for spell, hp in CASES:
         for seed in range(SEEDS):

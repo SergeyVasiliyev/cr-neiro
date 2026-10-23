@@ -55,6 +55,8 @@ def parse_args():
     p.add_argument("--anchor-until", type=float, default=0.3, help="share of the run the anchor fades over")
     p.add_argument("--deck", default=",".join(ce.DEFAULT_DECK))
     p.add_argument("--decision-ticks", type=int, default=6)
+    p.add_argument("--spots", type=int, default=2,
+                   help="placements: 1 = key spots, 2 = key spots and the tactical ones next to the troops")
     p.add_argument("--self-envs", type=int, default=48)
     p.add_argument("--pool-envs", type=int, default=40)
     p.add_argument("--steps", type=int, default=128, help="rollout length per iteration")
@@ -86,10 +88,14 @@ def parse_args():
     p.add_argument("--reward-trade", type=float, default=0.03)
     p.add_argument("--trade-floor", type=float, default=0.25)
     p.add_argument("--reward-leak", type=float, default=0.005)
+    p.add_argument("--leak-relative", action="store_true",
+                   help="leak penalty only for the leak the opponent doesn't match (both waiting at 10 is fine)")
     p.add_argument("--elixir-bank", type=float, default=0.0005, help="per elixir held per second")
     p.add_argument("--bank-cap", type=float, default=9.0)
     p.add_argument("--delay", type=int, nargs=2, default=(2, 5), help="ticks (50 ms) a move lands after the decision")
     p.add_argument("--noise", type=float, nargs=2, default=(0.03, 0.3), help="miss chance, position jitter (tiles)")
+    p.add_argument("--elixir-noise", type=float, nargs=3, default=(0.0, 0.0, 0.0),
+                   help="enemy elixir seen as live: per-match offset mean and spread, jitter per step (elixir)")
     p.add_argument("--endgame", type=float, default=0.0,
                    help="share of episodes starting late with towers at random HP (finishing, defending, overtime)")
     p.add_argument("--pool", nargs="*", default=POOL)
@@ -98,6 +104,9 @@ def parse_args():
     p.add_argument("--max-snapshots", type=int, default=6)
     p.add_argument("--fixed-share", type=float, default=0.25,
                    help="share of pool games spread evenly over the bots and earlier nets whatever the win rates")
+    p.add_argument("--bots-early", type=float, default=0.0,
+                   help="share of the run (from the start) in which pool games are against the scripted bots only: "
+                        "a net from scratch learns the basics against them before meeting stronger nets")
     p.add_argument("--eval-minutes", type=float, default=50)
     p.add_argument("--eval-games", type=int, default=200)
     p.add_argument("--final-games", type=int, default=400)
@@ -107,8 +116,8 @@ def parse_args():
 
 
 class Opponent:
-    def __init__(self, name, bot=None, net=None):
-        self.name, self.bot, self.net = name, bot, net
+    def __init__(self, name, bot=None, net=None, spots=1):
+        self.name, self.bot, self.net, self.spots = name, bot, net, spots  # spots: the placements it knows
         self.results = collections.deque(maxlen=100)
 
     def win_rate(self):  # ours against it, starting from one win and one loss
@@ -155,9 +164,11 @@ def main():
     data = ce.load_data()
     deck = ce.parse_deck(args.deck, data)
     reward = ce.make_reward(args.reward_win, args.reward_crown, args.reward_tower, args.reward_leak,
-                            args.reward_trade, args.trade_floor, True, args.elixir_bank, args.bank_cap)
-    common = dict(decision_ticks=args.decision_ticks, reward=reward, num_threads=args.threads, key_spots=True,
-                  delay_ticks=tuple(args.delay), obs_noise=tuple(args.noise), endgame_share=args.endgame)
+                            args.reward_trade, args.trade_floor, True, args.elixir_bank, args.bank_cap,
+                            leak_relative=args.leak_relative)
+    common = dict(decision_ticks=args.decision_ticks, reward=reward, num_threads=args.threads, key_spots=args.spots,
+                  delay_ticks=tuple(args.delay), obs_noise=tuple(args.noise), endgame_share=args.endgame,
+                  elixir_noise=tuple(args.elixir_noise))
     S, P = args.self_envs, args.pool_envs
     self_env = ce.VecEnv(data, [(deck, deck)], num_envs=S, bots=("noop", "noop"), seed=args.seed * 100 + 1, **common)
     pool_env = ce.VecEnv(data, [(deck, deck)], num_envs=P, bots=("noop", "noop"), seed=args.seed * 100 + 2, **common)
@@ -207,12 +218,19 @@ def main():
             continue
         for prm in onet.parameters():
             prm.requires_grad_(False)
-        pool.append(Opponent(os.path.relpath(path, os.path.join(ROOT, "runs")).replace("\\", "/"), net=onet))
+        pool.append(Opponent(os.path.relpath(path, os.path.join(ROOT, "runs")).replace("\\", "/"), net=onet,
+                             spots=int(ock.get("key_spots", 0))))
     snapshots = []
 
+    progress = progress0  # (pick() reads it; the loop below advances it)
+
     def pick():
-        # mostly by win rate, but a fixed share spread evenly over the bots and earlier nets, so they never
-        # drop out (v7's first night: self-play only, it went round in circles and lost to the bots)
+        # at first only the bots (--bots-early) ...
+        bots = [o for o in pool if o.bot]
+        if bots and progress < args.bots_early:
+            return random.choice(bots)
+        # ... then mostly by win rate, but a fixed share spread evenly over the bots and earlier nets, so they
+        # never drop out (v7's first night: self-play only, it went round in circles and lost to the bots)
         if random.random() < args.fixed_share:
             return random.choice(pool)
         return random.choices(pool + snapshots, weights=[o.weight() for o in pool + snapshots])[0]
@@ -220,6 +238,7 @@ def main():
     cur = [pick() for _ in range(P)]
     for i, o in enumerate(cur):
         pool_env.set_bot(i, 1, o.bot or "noop")
+        pool_env.set_key_spots(i, 1, o.spots)
     pool_env.reset()
     nxt = [pick() for _ in range(P)]
     for i, o in enumerate(nxt):
@@ -260,7 +279,7 @@ def main():
     eval_no = 0
 
     def save(path):
-        meta = dict(global_step=global_step, card_ids=list(data.card_ids), args=vars(args), key_spots=True,
+        meta = dict(global_step=global_step, card_ids=list(data.card_ids), args=vars(args), key_spots=args.spots,
                     v7=dict(progress=progress, lr=lr, log_alpha_place=log_alpha["place"],
                             log_alpha_time=log_alpha["time"]))
         save_checkpoint(path, net, optimizer, **meta)
@@ -337,6 +356,7 @@ def main():
                 cur[i].results.append(1.0 if w == 0 else (0.5 if w == 2 else 0.0))
                 game_lengths.append(int(pool_env.episode_steps[i]))
                 cur[i] = nxt[i]
+                pool_env.set_key_spots(i, 1, cur[i].spots)
                 nxt[i] = pick()
                 pool_env.set_bot(i, 1, nxt[i].bot or "noop")
         global_step += T * L
@@ -501,7 +521,7 @@ def main():
             frozen = copy.deepcopy(net).eval()
             for prm in frozen.parameters():
                 prm.requires_grad_(False)
-            snapshots.append(Opponent(f"self@{global_step / 1e6:.0f}M", net=frozen))
+            snapshots.append(Opponent(f"self@{global_step / 1e6:.0f}M", net=frozen, spots=args.spots))
             if len(snapshots) > args.max_snapshots:
                 snapshots.pop(0)
             next_snapshot += args.snapshot_every

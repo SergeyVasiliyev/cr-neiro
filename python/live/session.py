@@ -487,6 +487,39 @@ class LiveMatch:
         reach = self.data.card(e.def_id).unit.attack.range
         return math.dist(pos, (target.pos.x, target.pos.y)) - e.radius - target.radius > reach
 
+    def _move_context(self, unit_id):
+        """What the simulator's unit was doing when it had to be moved (for tools/sim_check.py): attacking or
+        walking, at a troop or a building, other troops close by (own side / enemy, centres within 1.5 tiles),
+        how far from the nearest building's edge, and where (own half, river / bridges, enemy half)."""
+        b = self.battle
+        e = b.find(unit_id)
+        if e is None:
+            return None
+        target = b.find(e.target)
+        own = enemy = 0
+        building_gap = enemy_gap = 99.0
+        for o in b.entities:
+            if o.id == e.id or o.hp <= 0:
+                continue
+            d = math.dist((o.pos.x, o.pos.y), (e.pos.x, e.pos.y))
+            if o.is_building:
+                building_gap = min(building_gap, d - o.radius - e.radius)
+                continue
+            if o.team != e.team:
+                enemy_gap = min(enemy_gap, d - o.radius - e.radius)
+            if d < 1.5 and o.air == e.air:
+                own += o.team == e.team
+                enemy += o.team != e.team
+        a = self.data.arena
+        y = e.pos.y if e.team == BLUE else a.height - e.pos.y  # in its own frame: 0 = its back line
+        zone = "own half" if y < a.river_min_y - 0.5 else "river" if y < a.river_max_y + 0.5 else "enemy half"
+        key = self._key(e)
+        age = self.now - self.plays[key[0]].g - self.deploy_delay if key is not None else None  # s since it appeared
+        return {"locked": bool(e.locked), "at_troop": bool(target is not None and not target.is_building), "age": age,
+                "own_close": own, "enemy_close": enemy, "building_gap": building_gap, "enemy_gap": enemy_gap,
+                "zone": zone,
+                "air": bool(e.air)}
+
     def _maybe_hidden(self, x, y, real):
         for r in real:
             if r["cls"] == "giant" and abs(r["x"] - x) < 1.5 and -0.5 < y - r["y"] < 2.5:
@@ -570,7 +603,8 @@ class LiveMatch:
             if self._out_of_reach(s_["id"], new):
                 continue  # it is hitting something: don't pull it out of its attack range over a measuring error
             self.corrections.append((g, "moved", s_["cls"], s_["team"],
-                                     {"sim": (s_["x"], s_["y"]), "real": (r["x"], r["y"]), "id": s_["id"]}))
+                                     {"sim": (s_["x"], s_["y"]), "real": (r["x"], r["y"]), "id": s_["id"],
+                                      "ctx": self._move_context(s_["id"])}))
             self._fix("move", s_["key"], new)
         matched_sim = {sim[i]["key"] for i, _, _ in pairs}
         for s_ in sim:

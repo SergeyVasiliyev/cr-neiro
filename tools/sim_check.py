@@ -112,6 +112,45 @@ def summarize(runs):
             if real:
                 print(f"  {name} {side} towers: damage in the game {real}, by the simulator's own fighting {sim} "
                       f"({sim / real:.0%})")
+    # Where the pulls happen: what the simulator's unit was doing then (pulled ahead < 0: the sim's unit was ahead)
+    by_ctx = defaultdict(list)
+    for name, m, _ in runs:
+        for g, kind, cls, side, d in m.corrections:
+            c = d.get("ctx") if kind == "moved" else None
+            if not c:
+                continue
+            sx, sy = d["sim"]
+            rx, ry = d["real"]
+            row = ((ry - sy) * (1 if side == "blue" else -1), ((rx - sx) ** 2 + (ry - sy) ** 2) ** 0.5)
+            by_ctx["all"].append(row)
+            by_ctx["air" if c["air"] else "ground"].append(row)
+            by_ctx["attacking" if c["locked"] else "walking"].append(row)
+            if not c["locked"]:
+                by_ctx["walking at a troop" if c["at_troop"] else "walking at a building"].append(row)
+            by_ctx["enemy within 1.5" if c["enemy_close"] else
+                   "own side within 1.5" if c["own_close"] else "nobody within 1.5"].append(row)
+            if c["own_close"] >= 2:
+                by_ctx["2+ own side within 1.5"].append(row)
+            by_ctx["building edge < 1 tile" if c["building_gap"] < 1.0 else
+                   "building edge 1-3 tiles" if c["building_gap"] < 3.0 else "building edge > 3 tiles"].append(row)
+            by_ctx["zone: " + c["zone"]].append(row)
+            if c.get("age") is not None and not c["locked"]:
+                a = c["age"]
+                by_ctx["walking, " + ("0-2" if a < 2 else "2-4" if a < 4 else "4-7" if a < 7 else "7+") +
+                       " s after it appeared"].append(row)
+                if a < 2:
+                    by_ctx[f"  0-2 s: {cls} {side}"].append(row)
+            if "enemy_gap" in c and not c["locked"]:
+                eg = c["enemy_gap"]
+                by_ctx["walking, nearest enemy troop " + ("< 3" if eg < 3 else "3-5.5" if eg < 5.5 else
+                                                          "5.5-8" if eg < 8 else "8+")].append(row)
+    if by_ctx:
+        print("\nwhere the simulator's units had to be moved (what they were doing then)")
+        print("  context                     pulls   ahead (median)   off (median, tiles)")
+        for key, rows in sorted(by_ctx.items(), key=lambda kv: -len(kv[1])):
+            print(f"  {key:26s} {len(rows):6d}   {statistics.median(a for a, _ in rows):+8.2f}"
+                  f"        {statistics.median(o for _, o in rows):8.2f}")
+        print("  ahead < 0: the simulator's unit was further on its way than the game's")
     # Who did the damage when the simulator had taken a unit lower than the game shows.
     blame = defaultdict(lambda: defaultdict(int))
     for name, m, _ in runs:

@@ -47,18 +47,28 @@ def fmt_clock(ms):
 class ModelAgent:
     """Plays a side with a trained checkpoint."""
 
-    def __init__(self, path):
+    def __init__(self, path, search=False):
         import torch  # only needed when a model is used
         from model import PolicyPlayer, load_policy
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        net, _ = load_policy(path, device)
-        self.player = PolicyPlayer(net, device)
-        self.name = "модель " + os.path.basename(os.path.dirname(os.path.abspath(path)))
+        net, ckpt = load_policy(path, device)
+        # as in live play: moves sampled at temperature 0.5, on the key spots it was trained with
+        self.player = PolicyPlayer(net, device, temperature=0.5)
+        self.search = None
+        if search:  # "search:<path>": lookahead before a move (python/search.py)
+            from search import SearchPlayer
+            self.search = SearchPlayer(net, ckpt, device, temperature=0.5)
+        self.key_spots = int(ckpt.get("key_spots", 0))
+        self.decision_ticks = ckpt.get("args", {}).get("decision_ticks")
+        self.name = ("модель+поиск " if search else "модель ") + os.path.basename(os.path.dirname(os.path.abspath(path)))
 
     # Agents decide first and play afterwards, so both sides decide on the same state.
     def decide(self, battle, team):
-        action = self.player(crsim.rl.encode(battle, team))
+        if self.search is not None:
+            action = self.search.decide(battle, team)
+        else:
+            action = self.player(crsim.rl.encode(battle, team, key_spots=self.key_spots))
         return lambda: crsim.rl.apply_action(battle, team, action)
 
 
@@ -81,7 +91,9 @@ def make_agent(spec, seed):
         return BotAgent(spec, seed)
     if os.path.exists(spec):
         return ModelAgent(spec)
-    sys.exit(f"не понимаю {spec!r}: нужно human, noop, random, heuristic или путь к .pt")
+    if spec.startswith("search:") and os.path.exists(spec[7:]):
+        return ModelAgent(spec[7:], search=True)
+    sys.exit(f"не понимаю {spec!r}: нужно human, noop, random, heuristic, путь к .pt или search:путь к .pt")
 
 
 class Viewer:
@@ -97,6 +109,9 @@ class Viewer:
                 sys.exit(f"неизвестные карты: {unknown}. Есть: {sorted(self.data.cards)}")
         self.seed = args.seed
         self.agents = {BLUE: make_agent(args.blue, args.seed + 1), RED: make_agent(args.red, args.seed + 2)}
+        for agent in self.agents.values():  # a model decides at the rhythm it was trained at
+            if getattr(agent, "decision_ticks", None):
+                self.decision_ticks = agent.decision_ticks
         self.agent_on = {team: agent is not None for team, agent in self.agents.items()}
         self.control = BLUE if self.agents[BLUE] is None or self.agents[RED] is not None else RED
         self.selected = None
@@ -430,8 +445,9 @@ class Viewer:
 def main():
     parser = argparse.ArgumentParser(description="crsim debug viewer")
     parser.add_argument("--data", default=os.path.join(ROOT, "data"))
-    parser.add_argument("--blue", default="human", help="human | noop | random | heuristic | путь к .pt")
-    parser.add_argument("--red", default="heuristic", help="human | noop | random | heuristic | путь к .pt")
+    parser.add_argument("--blue", default="human", help="human | noop | random | heuristic | путь к .pt | search:путь к .pt")
+    parser.add_argument("--red", default="heuristic",
+                        help="human | noop | random | heuristic | путь к .pt | search:путь к .pt (модель с поиском)")
     parser.add_argument("--blue-deck", default=DEFAULT_DECK, help="8 id карт через запятую")
     parser.add_argument("--red-deck", default=DEFAULT_DECK, help="8 id карт через запятую")
     parser.add_argument("--seed", type=int, default=1)

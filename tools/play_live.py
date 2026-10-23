@@ -49,17 +49,26 @@ class PolicyBrain:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         net, ckpt = load_policy(path, device)
         self.player = PolicyPlayer(net, device, greedy=True)
-        self.key_spots = bool(ckpt.get("key_spots", False))  # the action space it was trained with
+        self.key_spots = int(ckpt.get("key_spots", 0))  # the action space it was trained with
         # ... and the rhythm: it decided every decision_ticks x 50 ms in training
         self.decide_every = ckpt.get("args", {}).get("decision_ticks", 6) * 0.05
         self.finisher = False  # --finisher: a hard rule; the policies are to learn it (endgame starts in train_v7)
         self.data = crsim.GameData.load(os.path.join(ROOT, "data"))
+        self.net, self.ckpt, self.device = net, ckpt, device
+        self.search = None  # --search: lookahead (python/search.py) over the twin, the opponent's hand as it guesses
+
+    def use_search(self, temperature):
+        from search import SearchPlayer
+        self.search = SearchPlayer(self.net, self.ckpt, self.device, temperature=temperature)
 
     def __call__(self, battle):
         finish = finishing_spell(battle, BLUE, self.data) if self.finisher else None
         if finish is not None:  # a tower a spell in hand surely destroys: the policy never learned to take it
             return finish
-        action = int(self.player(crsim.rl.encode(battle, BLUE, key_spots=self.key_spots)))
+        if self.search is not None:
+            action = self.search.decide(battle, BLUE)
+        else:
+            action = int(self.player(crsim.rl.encode(battle, BLUE, key_spots=self.key_spots)))
         if action == 0:
             return None
         slot, cell = divmod(action - 1, crsim.rl.CELLS)
@@ -212,6 +221,13 @@ def main():
     p.add_argument("--preview-every", type=int, default=3, help="draw the preview window every N frames")
     p.add_argument("--decide-every", type=float, default=None,
                    help="seconds between brain decisions (default: as the policy was trained, else 0.3)")
+    p.add_argument("--temperature", type=float, default=0.5,
+                   help="a policy samples its moves at this temperature (0 = always its most likely move). 0.5 beat "
+                        "greedy in the simulator (v7e top vs v7e best 60%% vs 52%%, vs v7b 84%% vs 79%%) and is less "
+                        "predictable for a human")
+    p.add_argument("--search", action="store_true",
+                   help="lookahead before a move (python/search.py): the policy's best few moves played forward in "
+                        "copies of the twin; ~0.12 s a search. In the simulator it beat the plain policy 87%%")
     p.add_argument("--finisher", action="store_true",
                    help="hard rule: cast a spell in hand that surely destroys an enemy tower (python/live/finisher.py)")
     p.add_argument("--no-detector", action="store_true", help="no unit detection (the opponent stays invisible)")
@@ -254,6 +270,10 @@ def main():
     brain = make_brain(args.brain)
     if args.finisher and isinstance(brain, PolicyBrain):
         brain.finisher = True
+    if isinstance(brain, PolicyBrain) and args.temperature > 0:
+        brain.player.temperature = args.temperature
+    if isinstance(brain, PolicyBrain) and args.search:
+        brain.use_search(args.temperature if args.temperature > 0 else 0.5)
     if args.decide_every is None:
         args.decide_every = getattr(brain, "decide_every", 0.3)
     playing = args.act
@@ -265,7 +285,7 @@ def main():
     errors = 0
     last_refusal = None
     loop_no = 0
-    print(f"brain: {args.brain}, {'PLAYING' if playing else 'watching only (no --act)'}; P = pause, Q = quit")
+    print(f"brain: {args.brain}{' + lookahead' if args.search else ''}, {'PLAYING' if playing else 'watching only (no --act)'}; P = pause, Q = quit")
     try:
         while True:
             try:

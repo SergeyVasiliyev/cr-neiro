@@ -19,7 +19,7 @@ constexpr int kNoop = 0;
 constexpr int kNumActions = 1 + kHandSize * kCells;  // action = 1 + slot * kCells + row * kGridW + col
 
 constexpr int kMaxEntities = 64;     // towers first, then troops and flying spells closest to our side
-constexpr int kEntityFeatures = 14;
+constexpr int kEntityFeatures = 18;
 constexpr int kGlobalFeatures = 25;
 constexpr int kHandTokens = kDeckSize;  // own full cycle: 4 cards in hand, then the queue in order
 constexpr int kHistory = kDeckSize;     // the opponent's last plays, newest first
@@ -36,12 +36,18 @@ struct ObsConfig {
     // Not shown in the game, but computable from what is visible: the opponent's elixir as if their
     // cards still waiting as blueprints (hidden from us) had not been played yet.
     bool observe_enemy_elixir = true;
-    // Only key spots are legal (key_spot_cells): ~30 per troop card, a few per spell, instead of every tile.
-    bool key_spots = false;
+    // Which placements are legal: 0 = every tile; 1 = key spots only (key_spot_cells): ~30 per troop card, a
+    // few per spell; 2 = key spots and the tactical ones next to the troops on the field (key_spot_cells).
+    int key_spots = 0;
     // Training noise like the screen reader's (used only with rng): each enemy troop is missed with this
     // chance, and enemy troops are seen up to this many tiles off.
     double miss_enemy = 0.0;
     double jitter = 0.0;
+    // Live, the opponent's elixir is the twin's estimate (off by ~1.6 on average, mostly too high: plays it
+    // missed): the enemy elixir feature can be shifted by this much (an offset of the match's own) plus a
+    // normal jitter of this spread per observation (with rng).
+    double enemy_elixir_offset = 0.0;
+    double enemy_elixir_jitter = 0.0;
     std::mt19937_64* rng = nullptr;
 };
 
@@ -61,13 +67,19 @@ struct ObsView {
 void check_arena(const GameData& data);
 
 void encode(const Battle& battle, Team team, const ObsConfig& cfg, const ObsView& out);
-void action_mask(const Battle& battle, Team team, uint8_t* out, bool key_spots = false);
+void action_mask(const Battle& battle, Team team, uint8_t* out, int key_spots = 0);
 // The spots a player would really use (cells, own frame): for troops - behind the king and the princess
 // towers, the back corners, the bridges, the middle at a few depths, in front of the towers, the pockets
 // of fallen enemy towers, and on / in front of the enemy troop deepest in our half; for spells - the enemy
 // princess towers (the king's once awake), a tower with the troops next to it, the three densest groups of
 // enemy troops and that deepest troop, troops aimed where they will be when the spell lands.
-void key_spot_cells(const Battle& battle, Team team, std::vector<int>& troop_cells, std::vector<int>& spell_cells);
+// tactical: also troop spots next to the troops on the field - right behind our two foremost walking ground
+// troops (to push behind a giant), and for the two enemy troops deepest in our half: on it and a little in front,
+// at either side of it and at its back (to come at it from the side), and 3.5 tiles from it towards the middle in
+// front of our king (to pull it between the towers); and once an enemy princess tower is down, the deepest corner
+// of its pocket next to the middle.
+void key_spot_cells(const Battle& battle, Team team, std::vector<int>& troop_cells, std::vector<int>& spell_cells,
+                    bool tactical = false);
 
 // Absolute arena position of the center of an own-frame grid cell.
 Vec2 cell_position(const Battle& battle, Team team, int cell);

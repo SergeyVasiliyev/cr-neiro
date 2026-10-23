@@ -27,8 +27,15 @@ enum EntityFeature {
     kActive,
     kSpell,    // a spell in flight: x/y = where it lands, kDeploying = seconds until impact
     kPending,  // a played card not on the field yet: kDeploying = seconds until it appears
+    // What it is busy with (appended last: nets trained before ignore them): the way to its current target in
+    // tiles / 10 (troops chase or march on it, towers shoot it), whether that target is a troop (a fight) rather
+    // than a building, and seconds until its next hit while it is attacking.
+    kTargetDx,
+    kTargetDy,
+    kTargetTroop,
+    kNextHit,
 };
-static_assert(kPending + 1 == kEntityFeatures);
+static_assert(kNextHit + 1 == kEntityFeatures);
 
 constexpr double kHpScale = 5000.0;
 
@@ -64,7 +71,11 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
     for (const auto& p : b.pending()) {  // their blueprints are hidden from us: not spent as far as we know
         if (p.team == enemy && p.unit <= 0) visible_enemy_elixir += data.card(data.card_ids[p.card_index]).elixir;
     }
-    visible_enemy_elixir = std::min(visible_enemy_elixir, r.max_elixir);
+    if (cfg.rng && (cfg.enemy_elixir_offset != 0.0 || cfg.enemy_elixir_jitter > 0.0)) {
+        visible_enemy_elixir += cfg.enemy_elixir_offset +
+                                std::normal_distribution<double>(0.0, cfg.enemy_elixir_jitter)(*cfg.rng);
+    }
+    visible_enemy_elixir = std::clamp(visible_enemy_elixir, 0.0, r.max_elixir);
     g[k++] = cfg.observe_enemy_elixir ? static_cast<float>(visible_enemy_elixir / r.max_elixir) : 0.0f;
     g[k++] = me.crowns / 3.0f;
     g[k++] = them.crowns / 3.0f;
@@ -191,6 +202,13 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
         f[kAttacking] = e.locked ? 1.0f : 0.0f;
         f[kRadius] = static_cast<float>(e.radius);
         f[kActive] = e.active ? 1.0f : 0.0f;
+        if (const Entity* t = b.find(e.target); t && t->alive()) {
+            const Vec2 d = to_own_frame(a, team, t->pos) - p;
+            f[kTargetDx] = static_cast<float>(std::clamp(d.x / 10.0, -3.0, 3.0));
+            f[kTargetDy] = static_cast<float>(std::clamp(d.y / 10.0, -3.0, 3.0));
+            f[kTargetTroop] = t->is_building() ? 0.0f : 1.0f;
+        }
+        if (e.locked) f[kNextHit] = std::max(0, e.attack_cd_ms) / 1000.0f;
         out.entity_token[i] = e.kind == EntityKind::KingTower       ? kKingToken
                               : e.kind == EntityKind::PrincessTower ? kPrincessToken
                                                                     : kFirstCardToken + e.card_index;
@@ -239,9 +257,65 @@ int cell_at(Vec2 own) {
     return row * kGridW + col;
 }
 
+// Troop spots next to the troops on the field (key_spot_cells with tactical).
+void tactical_troop_spots(const Battle& b, Team team, std::vector<int>& troops) {
+    const ArenaDef& a = b.data().arena;
+    const double top = a.river_min_y - 0.5;  // the last row on our side of the river (own frame)
+    auto add = [&](Vec2 q) {
+        q.x = std::clamp(q.x, 0.0, a.width - 1e-3);
+        troops.push_back(cell_at({q.x, std::clamp(q.y, 0.0, top)}));
+    };
+    // Right behind our two foremost walking ground troops: a push follows its tank.
+    std::vector<std::pair<double, const Entity*>> ours, theirs;
+    for (const auto& e : b.entities()) {
+        if (e.is_building() || !e.alive()) continue;
+        const Vec2 p = to_own_frame(a, team, e.pos);
+        if (e.team == team) {
+            if (!e.air && !e.locked && e.deploy_ms_left <= 0 && p.y < a.river_max_y) ours.push_back({-p.y, &e});
+        } else if (p.y < a.river_max_y + 3.0) {
+            theirs.push_back({p.y, &e});
+        }
+    }
+    std::sort(ours.begin(), ours.end());
+    for (size_t i = 0; i < ours.size() && i < 2; ++i) {
+        const Vec2 p = to_own_frame(a, team, ours[i].second->pos);
+        add({p.x, p.y - ours[i].second->radius - 0.9});
+    }
+    // The two enemy troops deepest in our half (a second one only if apart from the first).
+    std::sort(theirs.begin(), theirs.end());
+    std::vector<Vec2> done;
+    const Vec2 middle{a.width / 2.0, 7.5};  // in front of our king, between the princess towers
+    for (const auto& [y, e] : theirs) {
+        if (done.size() >= 2) break;
+        const Vec2 p = to_own_frame(a, team, e->pos);
+        if (std::any_of(done.begin(), done.end(), [&](Vec2 q) { return distance(p, q) < 1.5; })) continue;
+        if (!done.empty()) {  // (the first one has these two already)
+            add(p);
+            add({p.x, p.y - 2.5});
+        }
+        done.push_back(p);
+        const double side = e->radius + 1.0;
+        add({p.x - side, p.y});
+        add({p.x + side, p.y});
+        add({p.x, p.y + side});  // at its back
+        const double d = distance(p, middle);
+        if (d > 1e-6) add(p + (middle + p * -1.0) * (std::min(3.5, d) / d));
+    }
+    // A fallen enemy princess tower opens its pocket: its deepest corner next to the middle (a fallen left tower:
+    // the pocket's right far corner, and the other way about).
+    const Team enemy_team = team == Team::Blue ? Team::Red : Team::Blue;
+    for (int side = 0; side < 2; ++side) {  // (princess towers by side of the arena: 0 = left half)
+        if (b.find(b.princess_tower(enemy_team, side)) != nullptr) continue;
+        const double deep = a.river_max_y + a.pocket_depth - 0.5;  // own frame
+        const Vec2 corner{side == 0 ? a.width / 2.0 - 0.5 : a.width / 2.0 + 0.5,
+                          team == Team::Blue ? deep : a.height - deep};
+        troops.push_back(cell_at(to_own_frame(a, team, corner)));
+    }
+}
+
 }  // namespace
 
-void key_spot_cells(const Battle& b, Team team, std::vector<int>& troops, std::vector<int>& spells) {
+void key_spot_cells(const Battle& b, Team team, std::vector<int>& troops, std::vector<int>& spells, bool tactical) {
     const ArenaDef& a = b.data().arena;
     troops.clear();
     spells.clear();
@@ -286,6 +360,7 @@ void key_spot_cells(const Battle& b, Team team, std::vector<int>& troops, std::v
         troops.push_back(cell_at({p.x, std::min(p.y - 2.5, top)}));
         spells.push_back(cell_at(p));
     }
+    if (tactical) tactical_troop_spots(b, team, troops);
     // Spells: the enemy princess towers still standing, and the king's only once he is awake (a spell on a
     // sleeping king wakes him up: a gift to the opponent) ...
     const Team enemy_team = team == Team::Blue ? Team::Red : Team::Blue;
@@ -332,7 +407,7 @@ void key_spot_cells(const Battle& b, Team team, std::vector<int>& troops, std::v
     }
 }
 
-void action_mask(const Battle& b, Team team, uint8_t* out, bool key_spots) {
+void action_mask(const Battle& b, Team team, uint8_t* out, int key_spots) {
     std::memset(out, 0, kNumActions);
     out[kNoop] = 1;
     if (b.finished()) return;
@@ -348,9 +423,9 @@ void action_mask(const Battle& b, Team team, uint8_t* out, bool key_spots) {
     for (int slot = 0; slot < kHandSize; ++slot) {
         spell[slot] = !me.hand[slot].empty() && b.data().card(me.hand[slot]).type == CardType::Spell;
     }
-    if (key_spots) {
+    if (key_spots > 0) {
         std::vector<int> troops, spells;
-        key_spot_cells(b, team, troops, spells);
+        key_spot_cells(b, team, troops, spells, key_spots >= 2);
         for (int cell : troops) {
             if (!b.can_deploy_at(team, cell_position(b, team, cell))) continue;
             for (int slot = 0; slot < kHandSize; ++slot) {

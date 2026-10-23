@@ -49,6 +49,11 @@ BatchEnv::BatchEnv(const GameData& data, BatchEnvConfig cfg) : data_(data), cfg_
     reset();
 }
 
+void BatchEnv::set_key_spots(int env, int side, int level) {
+    if (env < 0 || env >= num_envs() || side < 0 || side > 1) throw std::out_of_range("set_key_spots");
+    slots_[env].key_spots[side] = level;
+}
+
 void BatchEnv::set_bot(int env, int side, BotKind kind) {
     if (env < 0 || env >= cfg_.num_envs) throw std::out_of_range("env index out of range");
     if (side < 0 || side > 1) throw std::out_of_range("side must be 0 or 1");
@@ -119,6 +124,11 @@ void BatchEnv::reset_slot(int i) {
         const BotKind kind = s.bot_kind[side] >= 0 ? static_cast<BotKind>(s.bot_kind[side]) : cfg_.bots[side];
         s.bots[side] = make_bot(kind, s.rng());
     }
+    for (int side = 0; side < 2; ++side) {
+        s.elixir_offset[side] = cfg_.elixir_noise_sd > 0.0
+                                    ? std::normal_distribution<double>(cfg_.elixir_noise_mean, cfg_.elixir_noise_sd)(s.obs_rng)
+                                    : cfg_.elixir_noise_mean;
+    }
     if (cfg_.endgame_share > 0.0 && std::uniform_real_distribution<double>(0.0, 1.0)(s.rng) < cfg_.endgame_share) {
         start_endgame(s);
     }
@@ -178,10 +188,15 @@ void BatchEnv::write_obs(int i) {
             action_mask.data() + p * rl::kNumActions,
         };
         rl::ObsConfig obs = cfg_.obs;
-        obs.key_spots = cfg_.key_spots[side];
+        obs.key_spots = slots_[i].key_spots[side] >= 0 ? slots_[i].key_spots[side] : cfg_.key_spots[side];
         if (cfg_.obs_miss_enemy > 0.0 || cfg_.obs_jitter > 0.0) {
             obs.miss_enemy = cfg_.obs_miss_enemy;
             obs.jitter = cfg_.obs_jitter;
+            obs.rng = &slots_[i].obs_rng;
+        }
+        if (cfg_.elixir_noise_mean != 0.0 || cfg_.elixir_noise_sd > 0.0 || cfg_.elixir_noise_jitter > 0.0) {
+            obs.enemy_elixir_offset = slots_[i].elixir_offset[side];
+            obs.enemy_elixir_jitter = cfg_.elixir_noise_jitter;
             obs.rng = &slots_[i].obs_rng;
         }
         rl::encode(b, static_cast<Team>(side), obs, view);
@@ -264,7 +279,9 @@ void BatchEnv::step_slot(int i, const int32_t* actions) {
         const double received = s.tower_hp[side] - hp[side];
         shaping += rc.tower_damage * (dealt - received) / full_tower_hp_;
         shaping += rc.crown * ((me.crowns - s.crowns[side]) - (b.player(opponent(team)).crowns - s.crowns[other]));
-        shaping -= rc.elixir_leak * (me.elixir_leaked - s.leaked[side]);
+        const double my_leak = me.elixir_leaked - s.leaked[side];
+        const double their_leak = b.player(opponent(team)).elixir_leaked - s.leaked[other];
+        shaping -= rc.elixir_leak * (rc.leak_relative ? my_leak - their_leak : my_leak);
         shaping += rc.elixir_trade * (lost[other] - lost[side]);
         if (rc.elixir_bank != 0.0 && me.elixir < data_.rules.max_elixir - 1e-6) {
             style += rc.elixir_bank * std::min(me.elixir, rc.bank_cap) * step_s;

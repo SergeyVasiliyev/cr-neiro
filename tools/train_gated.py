@@ -42,7 +42,12 @@ def main():
     p.add_argument("--panel-games", type=int, default=200)
     p.add_argument("--promote", type=float, default=0.55, help="win rate over the best to replace it")
     p.add_argument("--panel-tol", type=float, default=0.03, help="how much worse than the best on the panel is allowed")
+    p.add_argument("--pool-add", nargs="*", default=[], help="more opponents for the chunks' pool")
+    p.add_argument("--panel-add", nargs="*", default=[], help="more policies on the panel")
+    p.add_argument("--chunk-extra", default="", help="more train_v7.py arguments for every chunk (override the defaults)")
     args = p.parse_args()
+    PANEL.extend(args.panel_add)
+    POOL.extend(args.pool_add)
 
     out_dir = os.path.join(ROOT, "runs", args.name)
     os.makedirs(out_dir, exist_ok=True)
@@ -88,7 +93,8 @@ def main():
         with open(log_path, "a", encoding="utf-8") as f:
             code = subprocess.run([PY, "python/train_v7.py", "--run", run, "--init", best, "--anchor", best,
                                    "--hours", str(args.chunk_hours), "--seed", str(100 + chunk), *CHUNK_ARGS,
-                                   "--pool", *pool], cwd=ROOT, stdout=f, stderr=subprocess.STDOUT).returncode
+                                   *args.chunk_extra.split(), "--pool", *pool],
+                                  cwd=ROOT, stdout=f, stderr=subprocess.STDOUT).returncode
         if code:
             log(f"!!! chunk {chunk} training failed (exit {code})")
             raise SystemExit(code)
