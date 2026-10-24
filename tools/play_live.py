@@ -61,7 +61,12 @@ class PolicyBrain:
         from search import SearchPlayer
         self.search = SearchPlayer(self.net, self.ckpt, self.device, temperature=temperature)
 
-    def __call__(self, battle):
+    def __call__(self, battle, enemy_elixir=None):
+        """enemy_elixir: the opponent's elixir as the twin best knows it now (LiveMatch.enemy_elixir_seen: their
+        troops and spells paid for as soon as seen), for the net and the lookahead instead of the simulator's."""
+        if enemy_elixir is not None and abs(enemy_elixir - battle.player(crsim.Team.RED).elixir) > 1e-6:
+            battle = battle.clone()
+            battle.set_elixir(crsim.Team.RED, enemy_elixir)
         finish = finishing_spell(battle, BLUE, self.data) if self.finisher else None
         if finish is not None:  # a tower a spell in hand surely destroys: the policy never learned to take it
             return finish
@@ -313,7 +318,8 @@ def main():
                 battle = match.battle
                 if battle is not None and brain is not None and t >= next_decision and g is not None and g >= 0:
                     next_decision = t + args.decide_every
-                    move = brain(battle)
+                    move = (brain(battle, enemy_elixir=match.enemy_elixir_seen(t)) if isinstance(brain, PolicyBrain)
+                            else brain(battle))
                     if move is not None:
                         slot, pos = move
                         card = battle.player(BLUE).hand[slot]

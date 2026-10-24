@@ -152,6 +152,42 @@ class LiveMatch:
     def game_time(self, t):
         return None if self.start is None else t - self.start
 
+    FRESH_SEEN = 2.5  # s: a red troop / spell seen this recently and not yet counted as a play is paid for already
+
+    def enemy_elixir_seen(self, t):
+        """The opponent's elixir for the net. The simulator's count takes a red play off only once the twin has
+        judged it one (~0.6 s after its troop shows up, a spell when it lands: ~1.6 / 2.0 s after it was put down,
+        when its elixir is long gone): here a troop already seen and a spell already flying are paid for at once -
+        a troop unless one of the same kind is close by in the simulator (that one, found again after a while
+        hidden), each troop its share of the card (an archer half of 3), each spell once."""
+        if self.battle is None:
+            return None
+        e = self.battle.player(RED).elixir
+        sim_red = [(twin.UNIT_OF_CARD.get(u.def_id, u.def_id), u.pos.x, u.pos.y) for u in self.battle.entities
+                   if not u.is_building and u.team == RED]
+        paid, spells = 0.0, []
+        paired = set(self.last_pair.values())  # tracks the twin has matched with a simulated unit
+        for tr in self.tracker.tracks:
+            if tr.id in self.handled or tr.id in self.own_units or tr.id in paired or t - tr.first_seen > self.FRESH_SEEN:
+                continue
+            x, y = tr.x, tr.y
+            if tr.cls in twin.CARD_OF_UNIT and tr.team == "red":
+                if tr.hits < 2 or not 15.5 <= tr.history[0][2] <= 31.6:
+                    continue  # a flicker, or first seen where they can't put it down: not fresh
+                if any(c == tr.cls and math.dist((cx, cy), (x, y)) < 3.0 for c, cx, cy in sim_red):
+                    continue
+                card = self.data.card(twin.CARD_OF_UNIT[tr.cls])
+                paid += card.elixir / max(1, card.count)
+            elif tr.cls in ("fireball", "arrows") and (tr.team == "red" or (tr.team == "any" and tr.vy < -1.0)):
+                if any(c == tr.cls and abs(ts - tr.first_seen) < 1.5 for c, ts in spells):
+                    continue  # (one cast)
+                if any(p.side == "red" and p.on and p.card == tr.cls and p.hit_t is not None
+                       and 0.0 <= p.hit_t - tr.first_seen < 3.0 for p in self.plays[-4:]):
+                    continue  # its hit already counted it
+                spells.append((tr.cls, tr.first_seen))
+                paid += self.data.card(tr.cls).elixir
+        return max(0.0, e - paid)
+
     # --- the journal -----------------------------------------------------------------------------
     @property
     def now(self):

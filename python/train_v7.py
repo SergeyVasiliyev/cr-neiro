@@ -80,6 +80,10 @@ def parse_args():
     p.add_argument("--w-style", type=float, nargs=2, default=(1.0, 0.3))
     p.add_argument("--w-until", type=float, default=0.6)
     p.add_argument("--ent-place", type=float, nargs=2, default=(1.2, 0.7), help="target, start and end (nats)")
+    p.add_argument("--card-floor", type=float, nargs=2, default=(0.0, 0.0),
+                   help="when it plays, every card in hand keeps at least this share of the play (start, end): a card "
+                        "never tried is never learned (v10 dropped the spells within 5M steps)")
+    p.add_argument("--card-floor-coef", type=float, default=0.1, help="weight of the --card-floor penalty")
     p.add_argument("--ent-time", type=float, nargs=2, default=(0.0, 0.0),
                    help="0 = no bonus on play-now-or-wait (a target there left greedy play hardly ever playing)")
     p.add_argument("--reward-win", type=float, default=1.0)
@@ -107,6 +111,14 @@ def parse_args():
     p.add_argument("--bots-early", type=float, default=0.0,
                    help="share of the run (from the start) in which pool games are against the scripted bots only: "
                         "a net from scratch learns the basics against them before meeting stronger nets")
+    p.add_argument("--bot-share", type=float, default=0.0,
+                   help="share of the pool games against the scripted bots, whatever else: self-play drifts away "
+                        "from beating them (v10 after its bots-only start: 92% -> 18% against the heuristic in 3 h)")
+    p.add_argument("--active-nets", type=int, default=0,
+                   help="at most this many opponent nets in the pool games at a time (0: no limit), chosen afresh "
+                        "every --active-every iterations: each net is a GPU pass of its own per step (v10 with ~18 "
+                        "of them: 1000 steps/s instead of 3700)")
+    p.add_argument("--active-every", type=int, default=10)
     p.add_argument("--eval-minutes", type=float, default=50)
     p.add_argument("--eval-games", type=int, default=200)
     p.add_argument("--final-games", type=int, default=400)
@@ -224,16 +236,37 @@ def main():
 
     progress = progress0  # (pick() reads it; the loop below advances it)
 
+    active = []  # --active-nets: the opponent nets in play now (refresh_active)
+
+    def refresh_active():
+        # half by win rate (the closest games), the rest at random among the earlier nets and snapshots
+        nets = [o for o in pool + snapshots if o.net is not None]
+        chosen = []
+        while nets and len(chosen) < args.active_nets:
+            if len(chosen) < (args.active_nets + 1) // 2:
+                o = random.choices(nets, weights=[o.weight() for o in nets])[0]
+            else:
+                o = random.choice(nets)
+            chosen.append(o)
+            nets.remove(o)
+        active[:] = chosen
+
     def pick():
         # at first only the bots (--bots-early) ...
         bots = [o for o in pool if o.bot]
-        if bots and progress < args.bots_early:
+        if bots and (progress < args.bots_early or random.random() < args.bot_share):
             return random.choice(bots)
         # ... then mostly by win rate, but a fixed share spread evenly over the bots and earlier nets, so they
         # never drop out (v7's first night: self-play only, it went round in circles and lost to the bots)
-        if random.random() < args.fixed_share:
-            return random.choice(pool)
-        return random.choices(pool + snapshots, weights=[o.weight() for o in pool + snapshots])[0]
+        if args.active_nets > 0:
+            if not active:
+                refresh_active()
+            fixed, choice = bots + [o for o in active if o in pool], bots + active
+        else:
+            fixed, choice = pool, pool + snapshots
+        if random.random() < args.fixed_share and fixed:
+            return random.choice(fixed)
+        return random.choices(choice, weights=[o.weight() for o in choice])[0]
 
     cur = [pick() for _ in range(P)]
     for i, o in enumerate(cur):
@@ -305,6 +338,7 @@ def main():
         w_style = lerp(*args.w_style, progress / args.w_until)
         ent_frac = progress / (1.0 - args.anneal)
         target_place = lerp(*args.ent_place, ent_frac)
+        card_floor = lerp(*args.card_floor, ent_frac)
         target_time = lerp(*args.ent_time, ent_frac)
         if progress >= 1.0 - args.anneal:
             if lr_at_anneal is None:
@@ -461,10 +495,19 @@ def main():
                 h_place = -(logq.exp() * logq).sum(-1)
                 w_play = choice * (1 - p_wait).detach()
                 h_place_mean = (h_place * w_play).sum() / w_play.sum().clamp(min=1e-6)
+                if card_floor > 0:
+                    # each card in hand (legal now) gets at least card_floor of the play: penalty on the shortfall
+                    slot_logits = logits[:, 1:].float().reshape(logits.shape[0], ce.crsim.rl.HAND_SIZE, -1).logsumexp(-1)
+                    slot_legal = slot_logits > -1e8
+                    slot_logp = torch.log_softmax(slot_logits.masked_fill(~slot_legal, -1e9), -1)
+                    shortfall = (math.log(card_floor) - slot_logp).clamp(min=0.0, max=5.0) * slot_legal
+                    floor_loss = (shortfall.sum(-1) * w_play).sum() / w_play.sum().clamp(min=1e-6)
+                else:
+                    floor_loss = torch.zeros((), device=logits.device)
                 h_time_mean = (h_time * choice).sum() / n_choice
                 alpha_time = math.exp(log_alpha["time"]) if args.ent_time[0] > 0 else 0.0
                 loss = (pg_loss + args.vf * v_loss - math.exp(log_alpha["place"]) * h_place_mean
-                        - alpha_time * h_time_mean)
+                        - alpha_time * h_time_mean + args.card_floor_coef * floor_loss)
                 if anchor_coef > 0:
                     with torch.no_grad(), amp():
                         a_logp = torch.log_softmax(anchor(mb)[0].float(), -1)
@@ -486,6 +529,7 @@ def main():
                     stats["kl"].append(kl)
                     stats["clip"].append(((((ratio - 1).abs() > args.clip).float() * choice).sum() / n_choice).item())
                     stats["h_place"].append(h_place_mean.item())
+                    stats["floor"].append(floor_loss.item())
                     stats["h_time"].append(h_time_mean.item())
                     stats["v_loss"].append(v_loss.item())
                     stats["pg_loss"].append(pg_loss.item())
@@ -516,6 +560,9 @@ def main():
         log_alpha["place"] = min(math.log(0.3), max(math.log(1e-4), log_alpha["place"] + 0.3 * (target_place - h_place)))
         log_alpha["time"] = min(math.log(0.3), max(math.log(1e-4), log_alpha["time"] + 0.3 * (target_time - h_time)))
 
+        if args.active_nets > 0 and iteration % args.active_every == 0:
+            refresh_active()
+
         # --- snapshots, logging, checkpoints, evaluation ---
         if global_step >= next_snapshot:
             frozen = copy.deepcopy(net).eval()
@@ -532,6 +579,7 @@ def main():
             + (" (stopped early)" if stop else "") + (f" skipped {skipped}" if skipped else "")
             + (f" | same move as the teacher {np.mean(stats['agree']):.0%}" if stats["agree"] else "")
             + (f" | kl to anchor {np.mean(stats['kl_anchor']):.3f} (x{anchor_coef:.3f})" if stats["kl_anchor"] else "")
+            + (f" | card floor {card_floor:.3f} short {np.mean(stats['floor']):.2f}" if card_floor > 0 else "")
             + f" | ent place {h_place:.2f}/{target_place:.2f} time {h_time:.2f}/{target_time:.2f} "
             f"(x{math.exp(log_alpha['place']):.3f}, x{math.exp(log_alpha['time']):.3f}) | "
             f"w {w_shaping:.2f}/{w_style:.2f} | EV " + "/".join(f"{e:.2f}" for e in ev)
