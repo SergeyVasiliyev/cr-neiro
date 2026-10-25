@@ -15,6 +15,8 @@ rem After its bots-only start, playing mostly itself, v10 drifted off beating th
 rem as v7 did): the bots now get 30% of the pool games whatever else, and the pool games are two thirds of the
 rem learning; at most 4 opponent nets at a time (each is a GPU pass of its own per step: ~18 of them made it 3-4x
 rem slower); the rate at most 2e-4 (v7 fell apart with its rate stuck at the cap).
+rem From 2026-10-25 13:30 (278M, bots beaten 97-99%): the bots down to 5% of the pool games, and v7e top, si2 and the
+rem clone (beaten 1-10%, so hardly ever picked by win rate) 15% between them; 3 other opponent nets at a time.
 rem   scripts\train_v10.bat [hours] [resume | checkpoint]   (default 72: the schedule runs on the clock and ends
 rem        annealed; resume: go on from runs\v10\latest.pt, or from the checkpoint given; hours = the time left)
 rem Waits for a detector round still running (raw\detector_round_log.txt without "=== done") before it starts.
@@ -37,7 +39,8 @@ start "stay awake" /min powershell -NoProfile -ExecutionPolicy Bypass -File scri
 ".venv\Scripts\python.exe" python\train_v7.py --run v10 --hours %HOURS% %RESUME% --size 160,3,4,48,320 --spots 2 ^
   --decision-ticks 4 --gamma 0.99933 0.99332 0.99332 --lam 0.966 --delay 3 9 --noise 0 0 --endgame 0 ^
   --lr 2e-4 --lr-range 1e-5 2e-4 --target-kl 0.01 --anneal 0.15 --ent-place 1.2 0.7 --ent-time 0 0 ^
-  --self-envs 32 --pool-envs 64 --bot-share 0.3 --active-nets 4 --active-every 10 ^
+  --self-envs 32 --pool-envs 64 --bot-share 0.05 --active-nets 3 --active-every 10 ^
+  --strong runs/v7e/top.pt runs/si2/best.pt runs/clone/user_v1.pt --strong-share 0.15 ^
   --w-shaping 1.0 0.1 --w-style 1.0 0.3 --w-until 0.6 ^
   --reward-trade 0.03 --reward-leak 0.005 --leak-relative --elixir-bank 0.0005 --elixir-noise 0.3 0.3 0.6 ^
   --pool heuristic pusher runs/ppo_v6/best.pt runs/v7b/final.pt runs/v7d/final.pt runs/v7e/top.pt runs/si2/best.pt runs/clone/user_v1.pt ^

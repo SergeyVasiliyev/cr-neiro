@@ -114,6 +114,10 @@ def parse_args():
     p.add_argument("--bot-share", type=float, default=0.0,
                    help="share of the pool games against the scripted bots, whatever else: self-play drifts away "
                         "from beating them (v10 after its bots-only start: 92% -> 18% against the heuristic in 3 h)")
+    p.add_argument("--strong", nargs="*", default=[],
+                   help="pool nets with a share of their own (--strong-share): ones it rarely beats would get few "
+                        "games by win rate alone")
+    p.add_argument("--strong-share", type=float, default=0.0, help="share of the pool games against --strong")
     p.add_argument("--active-nets", type=int, default=0,
                    help="at most this many opponent nets in the pool games at a time (0: no limit), chosen afresh "
                         "every --active-every iterations: each net is a GPU pass of its own per step (v10 with ~18 "
@@ -233,6 +237,19 @@ def main():
         pool.append(Opponent(os.path.relpath(path, os.path.join(ROOT, "runs")).replace("\\", "/"), net=onet,
                              spots=int(ock.get("key_spots", 0))))
     snapshots = []
+    if args.resume:  # the latest step checkpoints of this run as its earlier selves, as before the restart
+        steps = sorted(int(m.group(1)) for m in (re.fullmatch(r"step_(\d+)M\.pt", f) for f in os.listdir(run_dir))
+                       if m and int(m.group(1)) * 1e6 < global_step)
+        for n in steps[-args.max_snapshots:]:
+            snapshots.append(Opponent(f"self@{n}M", net=frozen(os.path.join(run_dir, f"step_{n}M.pt"))[0].eval(),
+                                      spots=args.spots))
+        if snapshots:
+            log(f"snapshots from the run's checkpoints: {', '.join(o.name for o in snapshots)}")
+    strong_names = {os.path.relpath(os.path.join(ROOT, s), os.path.join(ROOT, "runs")).replace("\\", "/")
+                    for s in args.strong}
+    strong = [o for o in pool if o.name in strong_names]
+    if args.strong and len(strong) < len(args.strong):
+        log(f"strong: only {', '.join(o.name for o in strong)} found in the pool")
 
     progress = progress0  # (pick() reads it; the loop below advances it)
 
@@ -256,11 +273,15 @@ def main():
         bots = [o for o in pool if o.bot]
         if bots and (progress < args.bots_early or random.random() < args.bot_share):
             return random.choice(bots)
+        if strong and random.random() < args.strong_share:
+            return random.choice(strong)
         # ... then mostly by win rate, but a fixed share spread evenly over the bots and earlier nets, so they
         # never drop out (v7's first night: self-play only, it went round in circles and lost to the bots)
         if args.active_nets > 0:
             if not active:
                 refresh_active()
+            if args.bot_share > 0:
+                bots = []  # (the bots play through --bot-share only)
             fixed, choice = bots + [o for o in active if o in pool], bots + active
         else:
             fixed, choice = pool, pool + snapshots
