@@ -46,6 +46,9 @@ def parse_args():
     p.add_argument("--run", default="v7")
     p.add_argument("--hours", type=float, default=7.5, help="time budget (the schedule runs on the clock)")
     p.add_argument("--resume", default=None, help="checkpoint of this kind of run; --hours is then the time left")
+    p.add_argument("--progress", type=float, default=None,
+                   help="with --resume: where in the schedule to go on from instead of the checkpoint's own (a run "
+                        "made longer: back from inside the anneal, to train at the full rate again before it)")
     p.add_argument("--init", default=None, help="start from these weights (a distilled net), schedule from zero")
     p.add_argument("--distill", default=None,
                    help="teacher checkpoint: instead of PPO, the teacher plays and the net learns to choose like it "
@@ -208,7 +211,7 @@ def main():
         optimizer.load_state_dict(ckpt["optimizer"])
     lr = state.get("lr", args.lr)
     log_alpha = {"place": state.get("log_alpha_place", math.log(0.01)), "time": state.get("log_alpha_time", math.log(0.01))}
-    progress0 = state.get("progress", 0.0)
+    progress0 = state.get("progress", 0.0) if args.progress is None else args.progress
 
     def frozen(path):
         fnet, fck = load_policy(path, device)

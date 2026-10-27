@@ -5,7 +5,7 @@ Copies of the checkpoints that matter, kept in Git LFS (`runs/` and `raw/` stay 
 
 | File | From | What |
 |---|---|---|
-| policy/v10_latest.pt | runs/v10/latest.pt | v10 (from scratch, 2026-10-23..26) at 293.9M steps, 62% of its schedule, with the optimizer state: `scripts\train_v10.bat <hours left> models/policy/v10_latest.pt` goes on from it |
+| policy/v10_final.pt | runs/v10/final.pt | v10 (from scratch, 2026-10-23..27, 460M steps), annealed, with the optimizer state. At temperature 0.5 over 400 games: v7e top 27.5%, si2 31%, the clone 38.5% (before the anneal at 425M: 7%, 4%, 15%). Train on from it: `scripts\train_v10.bat <hours> models/policy/v10_final.pt <progress>` |
 | policy/si2_best.pt | runs/si2/best.pt | v7e top after search distillation (expert iteration): the strongest net so far, the default of play_vs_bot / bot_vs_bot |
 | policy/v7e_top.pt | runs/v7e/top.pt | the best of the v7 runs |
 | policy/clone_user_v1.pt | runs/clone/user_v1.pt | a clone of the user's own play |
