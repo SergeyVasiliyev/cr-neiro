@@ -21,6 +21,12 @@ rem   scripts\train_v10.bat [hours] [resume | checkpoint]   (default 72: the sch
 rem        annealed; resume: go on from runs\v10\latest.pt, or from the checkpoint given; hours = the time left)
 rem   scripts\train_v10.bat [hours] resume [progress]   (progress: where in the schedule to go on from, e.g. 0.72 -
 rem        made longer on 2026-10-27 from 89% (inside the anneal) by 15 h: ~11 h more at the full rate, then a shorter anneal (8% of the schedule, ~4 h; was 15%))
+rem Cycle 2 (planned 2026-10-27): the anneal turned out to bank most of the gain (v7e top 7% -> 27.5%), so another
+rem round at the full rate from the annealed final, then the anneal again:
+rem   scripts\run_detached.bat train_v10.bat 24 runs/v10/final_cycle1.pt 0.72   (~17 h full rate, ~7 h anneal)
+rem Cycle 3 (2026-10-29): cycle 2 ended at 574M with v7e top 52%, si2 46%, the clone 61% (400 games, greedy), so
+rem the same again for 20 h:
+rem   scripts\run_detached.bat train_v10.bat 20 runs/v10/final_cycle2.pt 0.72   (~14 h full rate, ~6 h anneal)
 rem Waits for a detector round still running (raw\detector_round_log.txt without "=== done") before it starts.
 rem Detached:  set CR_TASK=cr-neiro-train ^&^& scripts\run_detached.bat train_v10.bat 72
 rem Progress: runs\v10\train.log (">>> eval" lines: games against the bots, v7e top, si2 best, the user's clone).

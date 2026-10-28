@@ -5,7 +5,9 @@
 RUN=${1:-v10}
 cd "$(dirname "$0")/.."
 OUT=raw/${RUN}_temp05.txt
-while [ -f runs/$RUN/latest.pt ] && ! grep -q "=== all done" runs/$RUN/train.log; do
+# (only the log since the latest start: a run resumed after it ended once has "=== all done" further up)
+running() { [ -f runs/$RUN/latest.pt ] && ! tail -n +$(grep -n "^run dir" runs/$RUN/train.log | tail -1 | cut -d: -f1) runs/$RUN/train.log | grep -q "=== all done"; }
+while running; do
   cp runs/$RUN/latest.pt raw/${RUN}_eval_copy.pt
   STEP=$(grep -E "^it " runs/$RUN/train.log | tail -1 | awk '{print $4}')
   LINE="$(date +%H:%M) at ${STEP}:"
