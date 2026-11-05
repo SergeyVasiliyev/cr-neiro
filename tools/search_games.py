@@ -27,7 +27,7 @@ from model import load_policy, obs_to_torch  # noqa: E402
 from search import SearchPlayer  # noqa: E402
 
 BLUE, RED = crsim.Team.BLUE, crsim.Team.RED
-MAX_CANDS = 8  # waiting + up to 7 plays
+MAX_CANDS = 10  # waiting + up to 9 plays (the policy's best + --explore)
 
 
 def save(path, rows):
@@ -46,6 +46,10 @@ def main():
     p.add_argument("--plain-share", type=float, default=0.1, help="share of the positions not searched to keep")
     p.add_argument("--rollouts", type=int, default=6)
     p.add_argument("--horizon", type=float, default=4.0)
+    p.add_argument("--think", type=float, default=0.9, help="search when the policy's chance of waiting is below this")
+    p.add_argument("--explore", type=int, default=0, help="more candidates: a random card and spot each")
+    p.add_argument("--think-anyway", type=float, default=0.0,
+                   help="share of the moments the policy is sure to wait that are searched anyway")
     p.add_argument("--per-shard", type=int, default=20)
     args = p.parse_args()
     out = os.path.join(ROOT, args.out)
@@ -55,7 +59,8 @@ def main():
     data = ce.load_data()
     deck = ce.DEFAULT_DECK
     net, ckpt = load_policy(os.path.join(ROOT, args.model), "cuda")
-    sp = SearchPlayer(net, ckpt, rollouts=args.rollouts, horizon_s=args.horizon)
+    sp = SearchPlayer(net, ckpt, rollouts=args.rollouts, horizon_s=args.horizon, think_below_wait=args.think,
+                      explore=args.explore, think_anyway=args.think_anyway, seed=args.seed)
     rows, shard, wins, t0 = [], 0, 0, time.time()
     for g in range(args.games):
         b = crsim.Battle(data, deck, deck, args.seed * 100000 + g)

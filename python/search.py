@@ -70,16 +70,24 @@ class _Runner:
 
 class SearchPlayer:
     def __init__(self, net, ckpt, device="cuda", candidates=5, rollouts=6, horizon_s=4.0, temperature=0.5,
-                 rollout_temperature=1.0, think_below_wait=0.9, opponent_net=None):
+                 rollout_temperature=1.0, think_below_wait=0.9, opponent_net=None, explore=0, think_anyway=0.0,
+                 seed=0):
         """candidates: the policy's most likely plays tried (plus waiting); rollouts: copies played out per
         candidate; horizon_s: how far ahead; think_below_wait: search only when the policy's chance of waiting is
-        below this (it wants to play something) - otherwise it just waits."""
+        below this (it wants to play something) - otherwise it just waits.
+        For games to learn from (expert iteration) the search can also look where the policy would not:
+        explore: this many more candidates, each a random card in hand and a random spot it may go (a play the
+        policy gives ~0 chance is never tried, so never learned - a spell finishing a tower was one: the net 0/96,
+        the search 39/48); think_anyway: the share of the moments the policy is sure to wait that are searched
+        anyway."""
         self.net, self.device = net, device
         self.opp = opponent_net or net
         self.key_spots = int(ckpt.get("key_spots", 0))
         self.ticks = int(ckpt.get("args", {}).get("decision_ticks", 6))
         self.k, self.r, self.h = candidates, rollouts, horizon_s
         self.temp, self.rtemp, self.think = temperature, rollout_temperature, think_below_wait
+        self.explore, self.think_anyway = explore, think_anyway
+        self.rng = np.random.default_rng(seed)
         self.searches = 0
         self.last = None  # the latest search: (candidates, their mean scores, the move chosen)
         self._runners = {}
@@ -106,11 +114,23 @@ class SearchPlayer:
         self.last = None
         logits = self._policy(battle, team) if logits is None else logits
         p = torch.softmax(logits / self.temp, -1)
-        if p[0] >= self.think or int((logits > -1e8).sum()) <= 1:
+        legal = logits > -1e8
+        if int(legal.sum()) <= 1 or (p[0] >= self.think and not (self.think_anyway and self.rng.random() < self.think_anyway)):
             return int(torch.distributions.Categorical(p).sample())  # nothing to weigh: as the policy says
         self.searches += 1
         top = [int(a) for a in torch.topk(p[1:], min(self.k, int((p[1:] > 0).sum()))).indices + 1]
         cands = [0] + top
+        if self.explore:
+            plays = np.flatnonzero(legal[1:].cpu().numpy()) + 1
+            plays = plays[~np.isin(plays, cands)]
+            for _ in range(self.explore):
+                if not len(plays):
+                    break
+                slots = (plays - 1) // crsim.rl.CELLS
+                slot = self.rng.choice(np.unique(slots))  # a card first, then where: each card as likely
+                a = int(self.rng.choice(plays[slots == slot]))
+                cands.append(a)
+                plays = plays[plays != a]
         other = crsim.Team.RED if team == crsim.Team.BLUE else crsim.Team.BLUE
         games, owner = [], []
         for ci, a in enumerate(cands):
@@ -121,7 +141,7 @@ class SearchPlayer:
                 games.append(b)
                 owner.append(ci)
         n = len(games)
-        size = 2 * (self.k + 1) * self.r  # fixed, so one captured graph serves every search
+        size = 2 * (self.k + 1 + self.explore) * self.r  # fixed, so one captured graph serves every search
         joint = self.opp is self.net  # both sides in one batch
         steps = max(1, int(round(self.h / (self.ticks * 0.05))))
         for step in range(steps):

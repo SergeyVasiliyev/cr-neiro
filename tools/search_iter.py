@@ -38,6 +38,9 @@ def main():
                    help="win rate over the best to replace it (a distilled step gains a few %%, not 10)")
     p.add_argument("--panel-tol", type=float, default=0.03)
     p.add_argument("--distill-extra", default="", help="more tools/distill_search.py arguments")
+    p.add_argument("--games-extra", default="", help="more tools/search_games.py arguments (--explore 2 ...)")
+    p.add_argument("--panel", nargs="+", default=PANEL, help="policies (or bots) a candidate must hold up against")
+    p.add_argument("--top", default="runs/v7e/top.pt", help="a fixed reference, scored every round")
     args = p.parse_args()
 
     out_dir = os.path.join(ROOT, "runs", args.name)
@@ -69,7 +72,7 @@ def main():
         return float(m.group(1))
 
     def panel(model):
-        return {o: score(model, o, args.panel_games) for o in PANEL}
+        return {o: score(model, o, args.panel_games) for o in args.panel}
 
     best = os.path.join(out_dir, "best.pt")
     if not os.path.exists(best):
@@ -78,7 +81,7 @@ def main():
     started = time.time()
     done = [int(m.group(1)) for m in (re.fullmatch(r"round_(\d+)\.pt", n) for n in os.listdir(out_dir)) if m]
     rnd = max(done, default=0) + 1
-    best_is_top = args.start.replace("\\", "/") == "runs/v7e/top.pt" and not done  # no need to play it twice
+    best_is_top = args.start.replace("\\", "/") == args.top and not done  # no need to play it twice
     best_panel = panel(rel_best)
     log(f">>> start: best = {args.start}; panel " + ", ".join(f"{o} {s:.0%}" for o, s in best_panel.items()))
     while time.time() - started < args.hours * 3600:
@@ -91,7 +94,7 @@ def main():
         else:
             logs = [open(os.path.join(ROOT, "raw", f"train_{args.name}_gen{w}.txt"), "w") for w in range(args.workers)]
         workers = [subprocess.Popen([PY, "tools/search_games.py", "--model", rel_best, "--out", games_dir,
-                                     "--games", str(args.games), "--seed", str(rnd * 100 + w)], cwd=ROOT,
+                                     "--games", str(args.games), "--seed", str(rnd * 100 + w)] + args.games_extra.split(), cwd=ROOT,
                                     stdout=f, stderr=subprocess.STDOUT)
                    for w, f in enumerate(logs)]
         codes = [w.wait() for w in workers]
@@ -114,20 +117,20 @@ def main():
         shutil.copy(os.path.join(ROOT, "runs", f"{args.name}_r{rnd}", "final.pt"), cand)
         rel_cand = os.path.relpath(cand, ROOT)
         vs_best = score(rel_cand, rel_best, args.eval_games)
-        vs_top = vs_best if best_is_top else score(rel_cand, "runs/v7e/top.pt", args.eval_games)
+        vs_top = vs_best if best_is_top else score(rel_cand, args.top, args.eval_games)
         promoted = False
         if vs_best >= args.promote:
             cand_panel = panel(rel_cand)
             avg_c = sum(cand_panel.values()) / len(cand_panel)
             avg_b = sum(best_panel.values()) / len(best_panel)
             promoted = avg_c >= avg_b - args.panel_tol
-            log(f">>> round {rnd}: vs best {vs_best:.1%}, vs v7e top {vs_top:.1%}, panel avg {avg_c:.1%} "
+            log(f">>> round {rnd}: vs best {vs_best:.1%}, vs {os.path.basename(os.path.dirname(args.top))} top {vs_top:.1%}, panel avg {avg_c:.1%} "
                 f"(best {avg_b:.1%}) -> {'PROMOTED' if promoted else 'kept the best'}")
             if promoted:
                 shutil.copy(cand, best)
                 best_panel, best_is_top = cand_panel, False
         else:
-            log(f">>> round {rnd}: vs best {vs_best:.1%}, vs v7e top {vs_top:.1%} -> kept the best "
+            log(f">>> round {rnd}: vs best {vs_best:.1%}, vs {os.path.basename(os.path.dirname(args.top))} top {vs_top:.1%} -> kept the best "
                 f"({(time.time() - t0) / 60:.0f} min a round)")
         rnd += 1
     log("=== search iteration done")
