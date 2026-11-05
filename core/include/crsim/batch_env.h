@@ -103,6 +103,12 @@ public:
     // The placements one side of one env may use (rl::ObsConfig::key_spots level), instead of the config's: a
     // pool opponent trained on another set of spots keeps to its own.
     void set_key_spots(int env, int side, int level);
+    // Positions to start from: this share of the episodes begins at a copy of one of them (picked uniformly)
+    // instead of a fresh match - moments of recorded human battles, to learn what its own games never show
+    // (a push built behind the king, a low tower, an elixir lead). Taken as they are but for the twin's
+    // bookkeeping (it never finishes on its own, logs events): off. One that is over, or whose cards are not
+    // a matchup's decks, is left out; returns how many were kept. The battles' GameData must outlive the env.
+    int set_starts(const std::vector<const Battle*>& starts, double share);
 
     int num_envs() const { return cfg_.num_envs; }
     const BatchEnvConfig& config() const { return cfg_; }
@@ -132,7 +138,9 @@ public:
     std::vector<int32_t> episode_steps;
     std::vector<int32_t> episode_time_ms;
     std::vector<int32_t> episode_matchup;
+    std::vector<int32_t> episode_start;  // set_starts: the position it started from, -1 = a fresh match
     std::vector<int32_t> matchup;  // matchup of the episode currently running in each env
+    std::vector<int32_t> start;    // ... and the position it started from (-1 = fresh)
 
 private:
     struct Slot {
@@ -153,6 +161,7 @@ private:
         };
         Pending pending[2];
         int matchup = 0;
+        int start = -1;  // set_starts: the position this episode began at, -1 = a fresh match
         int steps = 0;
         int tower_hp[2] = {0, 0};
         int crowns[2] = {0, 0};
@@ -174,6 +183,8 @@ private:
     GameData data_;
     BatchEnvConfig cfg_;
     std::vector<Slot> slots_;
+    std::vector<std::unique_ptr<Battle>> starts_;  // set_starts
+    double start_share_ = 0.0;
     double full_tower_hp_ = 1.0;
 };
 

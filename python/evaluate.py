@@ -35,6 +35,9 @@ def main():
     p.add_argument("--native-rhythm", action="store_true",
                    help="each policy decides at the rhythm it was trained at (its checkpoint's decision_ticks), "
                         "the match stepping at their greatest common divisor; --decision-ticks is then ignored")
+    p.add_argument("--human-starts", type=float, default=0.0,
+                   help="this share of the games starts at a moment of a recorded human battle (python/human_starts.py). "
+                        "Those positions are not even for blue and red: compare a net from both sides")
     args = p.parse_args()
 
     data = ce.load_data()
@@ -59,6 +62,10 @@ def main():
     bots = tuple(pl if isinstance(pl, str) else "noop" for pl in players)
     env = ce.VecEnv(data, [(deck, opp_deck)], num_envs=min(args.envs, args.games), bots=bots,
                     decision_ticks=step_ticks, seed=args.seed, key_spots=tuple(key_spots))
+    if args.human_starts > 0:
+        import human_starts
+        env.set_starts(human_starts.build(data, log=lambda _: None)[0], args.human_starts)
+        env.reset()
     step_no = 0
     results, crowns, lengths = [], [], []
     started = env.num_envs
@@ -68,6 +75,8 @@ def main():
     for cid, card in data.cards.items():
         spell_token[ce.crsim.rl.FIRST_CARD_TOKEN + card.index] = card.is_spell
     play_elixir, spells = [], 0
+    giant_token = ce.crsim.rl.FIRST_CARD_TOKEN + data.cards["giant"].index
+    giants, giants_back = 0, 0  # its giants, and those put behind its king (the back two rows: a push built from there)
     t0 = time.time()
     while len(results) < args.games:
         actions = np.full((env.num_envs, 2), ce.BOT_ACTION, dtype=np.int32)
@@ -91,7 +100,11 @@ def main():
         taken = env.env.taken[:, 0]
         for i in np.flatnonzero((taken > 0) & active):
             play_elixir.append(elixir[i])
-            spells += int(spell_token[hand[i, (taken[i] - 1) // ce.CELLS]])
+            card = hand[i, (taken[i] - 1) // ce.CELLS]
+            spells += int(spell_token[card])
+            if card == giant_token:
+                giants += 1
+                giants_back += int((taken[i] - 1) % ce.CELLS // ce.GRID_W < 2)
         for i in np.flatnonzero(done & active):
             w = int(env.winner[i])
             results.append(1.0 if w == 0 else (0.5 if w == 2 else 0.0))
@@ -114,7 +127,8 @@ def main():
     if play_elixir:
         pe, n = np.array(play_elixir), max(1, len(crowns))  # (all finished games, a few past --games)
         print(f"  blue's style: {len(pe) / n:.1f} cards per game, elixir when playing {pe.mean():.1f} "
-              f"(from 8+: {np.mean(pe >= 8):.0%}), spells per game {spells / n:.1f}")
+              f"(from 8+: {np.mean(pe >= 8):.0%}), spells per game {spells / n:.1f}, "
+              f"giants behind the king {giants_back / max(1, giants):.0%} of {giants / n:.1f} a game")
 
 
 if __name__ == "__main__":

@@ -377,6 +377,9 @@ PYBIND11_MODULE(crsim, m) {
              "the placements one side of one env may use (0 every tile, 1 key spots, 2 key + tactical spots), "
              "-1 = the config's")
         .def("reset_env", &BatchEnv::reset_env, py::arg("env"))
+        .def("set_starts", &BatchEnv::set_starts, py::arg("starts"), py::arg("share"), py::keep_alive<1, 2>(),
+             "positions (Battles) this share of the episodes starts from instead of a fresh match; returns how "
+             "many were kept (one over, or with other decks, is left out)")
         .def(
             "step",
             [](BatchEnv& env, py::array_t<int32_t, py::array::c_style | py::array::forcecast> actions) {
@@ -414,7 +417,9 @@ PYBIND11_MODULE(crsim, m) {
         CRSIM_VIEW(episode_steps, n)
         CRSIM_VIEW(episode_time_ms, n)
         CRSIM_VIEW(episode_matchup, n)
+        CRSIM_VIEW(episode_start, n)
         CRSIM_VIEW(matchup, n)
+        CRSIM_VIEW(start, n)
 #undef CRSIM_VIEW
         ;
 }

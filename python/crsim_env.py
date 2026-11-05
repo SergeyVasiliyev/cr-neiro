@@ -137,6 +137,18 @@ class VecEnv:
         spots; -1 = the env's own setting): a pool opponent keeps to the spots it was trained on."""
         self.env.set_key_spots(env, side, int(level))
 
+    def set_starts(self, battles, share):
+        """This share of the episodes from now on starts at a copy of one of these battles (e.g. moments of
+        recorded matches, python/human_starts.py) instead of a fresh match. They must be built on this env's
+        GameData object (self.data). Returns how many were kept (finished ones or other decks are left out)."""
+        return self.env.set_starts(list(battles), float(share))
+
+    @property
+    def episode_start(self):
+        """Where the episodes that just ended (done = 1) started: the n-th of set_starts' kept battles (in the
+        order given), -1 = a fresh match."""
+        return self.env.episode_start
+
     @property
     def reward_parts(self):
         """(N, 2, 3) rewards of the last step in parts: result, shaping, style (reward is their sum)."""

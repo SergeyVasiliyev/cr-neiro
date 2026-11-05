@@ -105,6 +105,11 @@ def parse_args():
                    help="enemy elixir seen as live: per-match offset mean and spread, jitter per step (elixir)")
     p.add_argument("--endgame", type=float, default=0.0,
                    help="share of episodes starting late with towers at random HP (finishing, defending, overtime)")
+    p.add_argument("--human-starts", type=float, default=0.0,
+                   help="share of episodes starting at a moment of a recorded human battle (python/human_starts.py): "
+                        "positions its own games never reach - a push from behind the king, a low tower, an "
+                        "elixir lead - to learn how they end")
+    p.add_argument("--human-every", type=float, default=1.5, help="s of a recorded battle between its start positions")
     p.add_argument("--pool", nargs="*", default=POOL)
     p.add_argument("--bench", nargs="*", default=BENCH, help="opponents of the greedy evaluations")
     p.add_argument("--snapshot-every", type=float, default=2e6, help="learner steps between own snapshots")
@@ -121,6 +126,8 @@ def parse_args():
                    help="pool nets with a share of their own (--strong-share): ones it rarely beats would get few "
                         "games by win rate alone")
     p.add_argument("--strong-share", type=float, default=0.0, help="share of the pool games against --strong")
+    p.add_argument("--strong-weights", type=float, nargs="*", default=None,
+                   help="how often each --strong net is picked, relative (default: all alike)")
     p.add_argument("--active-nets", type=int, default=0,
                    help="at most this many opponent nets in the pool games at a time (0: no limit), chosen afresh "
                         "every --active-every iterations: each net is a GPU pass of its own per step (v10 with ~18 "
@@ -192,6 +199,13 @@ def main():
     self_env = ce.VecEnv(data, [(deck, deck)], num_envs=S, bots=("noop", "noop"), seed=args.seed * 100 + 1, **common)
     pool_env = ce.VecEnv(data, [(deck, deck)], num_envs=P, bots=("noop", "noop"), seed=args.seed * 100 + 2, **common)
     L = 2 * S + P  # learner rows: self-play blue, self-play red, pool blue
+    if args.human_starts > 0:
+        import human_starts
+        starts, _ = human_starts.build(data, args.human_every, log=log)  # (built on `data`, which outlives the envs)
+        log(f"human starts for {args.human_starts:.0%} of the episodes: {human_starts.describe(starts, data)}")
+        for env in (self_env, pool_env):
+            env.set_starts(starts, args.human_starts)
+        del starts
 
     state = {}
     if args.resume:
@@ -253,6 +267,13 @@ def main():
     strong = [o for o in pool if o.name in strong_names]
     if args.strong and len(strong) < len(args.strong):
         log(f"strong: only {', '.join(o.name for o in strong)} found in the pool")
+    weight_of = {}
+    if args.strong_weights:
+        if len(args.strong_weights) != len(args.strong):
+            raise SystemExit("--strong-weights: one per --strong net")
+        weight_of = {os.path.relpath(os.path.join(ROOT, s), os.path.join(ROOT, "runs")).replace("\\", "/"): w
+                     for s, w in zip(args.strong, args.strong_weights)}
+    strong_weights = [weight_of.get(o.name, 1.0) for o in strong]
 
     progress = progress0  # (pick() reads it; the loop below advances it)
 
@@ -277,7 +298,7 @@ def main():
         if bots and (progress < args.bots_early or random.random() < args.bot_share):
             return random.choice(bots)
         if strong and random.random() < args.strong_share:
-            return random.choice(strong)
+            return random.choices(strong, weights=strong_weights)[0]
         # ... then mostly by win rate, but a fixed share spread evenly over the bots and earlier nets, so they
         # never drop out (v7's first night: self-play only, it went round in circles and lost to the bots)
         if args.active_nets > 0:

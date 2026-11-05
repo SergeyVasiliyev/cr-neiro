@@ -39,7 +39,9 @@ BatchEnv::BatchEnv(const GameData& data, BatchEnvConfig cfg) : data_(data), cfg_
     episode_steps.resize(n);
     episode_time_ms.resize(n);
     episode_matchup.resize(n);
+    episode_start.assign(n, -1);
     matchup.resize(n);
+    start.assign(n, -1);
 
     slots_.resize(n);
     for (size_t i = 0; i < n; ++i) {
@@ -58,6 +60,41 @@ void BatchEnv::set_bot(int env, int side, BotKind kind) {
     if (env < 0 || env >= cfg_.num_envs) throw std::out_of_range("env index out of range");
     if (side < 0 || side > 1) throw std::out_of_range("side must be 0 or 1");
     slots_[env].bot_kind[side] = static_cast<int>(kind);
+}
+
+int BatchEnv::set_starts(const std::vector<const Battle*>& starts, double share) {
+    // a team's cards: its hand and the queue behind it (a slot waiting to refill has its card in the queue)
+    using Cards = std::vector<std::string>;
+    auto cards = [](const PlayerState& p) {
+        Cards all(p.queue.begin(), p.queue.end());
+        for (const auto& c : p.hand) {
+            if (!c.empty()) all.push_back(c);
+        }
+        std::sort(all.begin(), all.end());
+        return all;
+    };
+    auto sorted = [](const Deck& d) {
+        Cards all(d.begin(), d.end());
+        std::sort(all.begin(), all.end());
+        return all;
+    };
+    starts_.clear();
+    for (const Battle* b : starts) {
+        if (!b || b->finished()) continue;
+        const Cards blue = cards(b->player(Team::Blue)), red = cards(b->player(Team::Red));
+        const bool decks = std::any_of(cfg_.matchups.begin(), cfg_.matchups.end(), [&](const Matchup& m) {
+            return sorted(m.blue) == blue && sorted(m.red) == red;
+        });
+        if (!decks) continue;
+        auto copy = std::make_unique<Battle>(*b);
+        copy->set_follow_real(false);
+        copy->set_record_events(false);
+        copy->set_record_damage(false);
+        copy->clear_events();
+        starts_.push_back(std::move(copy));
+    }
+    start_share_ = share;
+    return static_cast<int>(starts_.size());
 }
 
 void BatchEnv::reset() {
@@ -118,7 +155,13 @@ void BatchEnv::reset_slot(int i) {
     Slot& s = slots_[i];
     s.matchup = static_cast<int>(s.rng() % cfg_.matchups.size());
     const Matchup& m = cfg_.matchups[s.matchup];
-    s.battle = std::make_unique<Battle>(data_, m.blue, m.red, s.rng());
+    s.start = -1;
+    if (!starts_.empty() && std::uniform_real_distribution<double>(0.0, 1.0)(s.rng) < start_share_) {
+        s.start = static_cast<int>(s.rng() % starts_.size());
+        s.battle = std::make_unique<Battle>(*starts_[s.start]);
+    } else {
+        s.battle = std::make_unique<Battle>(data_, m.blue, m.red, s.rng());
+    }
     s.battle->set_record_events(false);
     for (int side = 0; side < 2; ++side) {
         const BotKind kind = s.bot_kind[side] >= 0 ? static_cast<BotKind>(s.bot_kind[side]) : cfg_.bots[side];
@@ -129,19 +172,22 @@ void BatchEnv::reset_slot(int i) {
                                     ? std::normal_distribution<double>(cfg_.elixir_noise_mean, cfg_.elixir_noise_sd)(s.obs_rng)
                                     : cfg_.elixir_noise_mean;
     }
-    if (cfg_.endgame_share > 0.0 && std::uniform_real_distribution<double>(0.0, 1.0)(s.rng) < cfg_.endgame_share) {
+    if (s.start < 0 && cfg_.endgame_share > 0.0 &&
+        std::uniform_real_distribution<double>(0.0, 1.0)(s.rng) < cfg_.endgame_share) {
         start_endgame(s);
     }
     s.steps = 0;
     for (int side = 0; side < 2; ++side) {
+        const PlayerState& p = s.battle->player(static_cast<Team>(side));
         s.tower_hp[side] = tower_hp(*s.battle, static_cast<Team>(side));
-        s.crowns[side] = s.battle->player(static_cast<Team>(side)).crowns;
-        s.leaked[side] = s.battle->player(static_cast<Team>(side)).elixir_leaked;  // (an endgame start ran the clock)
-        s.plays_counted[side] = 0;
+        s.crowns[side] = p.crowns;
+        s.leaked[side] = p.elixir_leaked;  // (an endgame start ran the clock, a start position is mid-match)
+        s.plays_counted[side] = p.plays.size();
     }
     s.troop_worth.clear();
     for (auto& pd : s.pending) pd = Slot::Pending{};
     matchup[i] = s.matchup;
+    start[i] = s.start;
 }
 
 void BatchEnv::start_endgame(Slot& s) {
@@ -310,6 +356,7 @@ void BatchEnv::step_slot(int i, const int32_t* actions) {
         episode_steps[i] = s.steps;
         episode_time_ms[i] = b.time_ms();
         episode_matchup[i] = s.matchup;
+        episode_start[i] = s.start;
         if (cfg_.auto_reset) reset_slot(i);
     } else {
         done[i] = 0;
