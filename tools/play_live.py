@@ -25,6 +25,7 @@ from live.device import Device, measure  # noqa: E402
 from live.finisher import finishing_spell  # noqa: E402
 from live.window import WindowScreen  # noqa: E402
 from live.session import BLUE, LiveMatch  # noqa: E402
+import twin  # noqa: E402
 from perception.layout import Layout  # noqa: E402
 from perception.reader import ScreenReader  # noqa: E402
 
@@ -180,6 +181,19 @@ def full_size(frame):
     if frame.shape[1] != 1080:
         frame = cv2.resize(frame, (1080, 1920), interpolation=cv2.INTER_LINEAR)
     return frame
+
+
+def sim_view(match, battle, seen):
+    """The simulator copy in one line: our elixir, each tower's HP on the screen / in the simulator, and every unit
+    with where it is (b = ours, r = theirs)."""
+    def sim_hp(name):
+        e = battle.find(match._tower_id(name))
+        return e.hp if e is not None else 0
+    shown = seen.get("towers", {})
+    towers = " ".join(f"{name} {(shown.get(name) or (None,))[0] or '?'}/{sim_hp(name)}" for name in match.TOWERS)
+    units = " ".join(f"{'b' if e.team == BLUE else 'r'}:{twin.UNIT_OF_CARD.get(e.def_id, e.def_id)}"
+                     f"({e.pos.x:.1f},{e.pos.y:.1f})" for e in battle.entities if not e.is_building)
+    return f"elixir {battle.player(BLUE).elixir:.1f}  towers {towers}  units {units or '-'}"
 
 
 def check(device, screen, reader):
@@ -354,6 +368,8 @@ def main():
                     when = f"game {g:5.1f}s" if g is not None else "no battle"
                     units = sum(1 for e in battle.entities if not e.is_building) if battle is not None else 0
                     print(f"[{fps:4.1f} fps] {when}  elixir {seen['elixir']:.1f}  hand {hand}  units in sim {units}")
+                    if battle is not None:  # to check the simulator copy against the game afterwards
+                        print(f"          sim: {sim_view(match, battle, seen)}")
 
             except Exception:  # one bad frame must not stop the bot in the middle of a battle
                 errors += 1

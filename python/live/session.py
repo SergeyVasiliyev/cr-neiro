@@ -116,6 +116,8 @@ class LiveMatch:
         self.tower_ref = {}      # tower name -> (real hp, simulated hp right after syncing to it)
         self.tower_damage = {}   # tower name -> [real damage, simulated damage] between syncs (a mechanics check)
         self.tower_gone_since = {}  # princess tower name -> since when its HP bar has not been seen
+        self.tower_synced = {}   # tower name -> game s of its last sync (the simulator still had it then)
+        self.tower_restored = {}  # tower name -> game s it was last brought back (see _restore_tower)
         self.sim_deaths = []     # (game s, kind, side, x, y) of units the simulator killed
         self.log = []            # (game seconds, text)
 
@@ -566,6 +568,22 @@ class LiveMatch:
                 return True
         return y > 30.5  # the top edge of the arena is partly behind the HUD
 
+    RESTORE_EVERY = 2.0  # s: a tower brought back is not brought back again sooner (its fight may kill it again)
+
+    def _restore_tower(self, name, hp, g):
+        """The game shows a tower standing that the simulator has destroyed (its own fighting went faster than
+        the game's, or a fall was guessed from a missing bar): back to the last moment the simulator still had it
+        in step, with the HP the game shows now - without this the simulator never had it again (live, the
+        opponent's princess tower stood on for a minute: the bot sent 9 elixir into a pocket that wasn't there)."""
+        last = self.tower_synced.get(name)
+        if (last is None or g - last > self.REWIND_KEEP - 5.0
+                or g - self.tower_restored.get(name, -1e9) < self.RESTORE_EVERY):
+            return
+        self.tower_restored[name] = g
+        self.corrections.append((g, "tower back", name, name.split("_")[0], {"real": hp}))
+        self.log.append((g, f"{name} stands in the game ({hp} HP): brought back in the simulator"))
+        self._record(Fix(last, "tower", name, int(hp)))
+
     def _correct(self, t, g, seen):
         """Tower HP from the screen; simulated units pulled to where they are seen, dropped when the game
         clearly no longer has them; a unit the game has and the simulator doesn't is a play's unit it lost
@@ -596,11 +614,17 @@ class LiveMatch:
             n = n + 1 if hp == last else 1
             self.tower_reads[name] = (hp, n)
             e = b.find(self._tower_id(name))
-            if n < 3 or e is None:
+            if n < 3:
+                continue
+            if e is None:
+                self._restore_tower(name, hp, g)
+                b = self.battle
                 continue
             prev = self.tower_ref.get(name)
-            match_over = g > (self.data.rules.regulation_ms + self.data.rules.overtime_ms) / 1000.0
-            if prev is not None and hp <= prev[0] and not match_over:  # (towers drain in the end animation)
+            # (towers drain in the end animation, which shows no timer - also after three crowns, well before the
+            # time is up)
+            match_over = not timer_shown or g > (self.data.rules.regulation_ms + self.data.rules.overtime_ms) / 1000.0
+            if prev is not None and hp <= prev[0] and not match_over:
                 # Damage since the last reading: what the game did vs what the simulator did with the
                 # same units on the field. A big gap means the simulated fighting is off.
                 dmg = self.tower_damage.setdefault(name, [0, 0])
@@ -611,6 +635,8 @@ class LiveMatch:
                 self._fix("tower", name, int(hp))
             e = b.find(self._tower_id(name))
             self.tower_ref[name] = (hp, e.hp if e is not None else 0)
+            if e is not None:
+                self.tower_synced[name] = g
         b = self.battle
         tracks = {tr.id: tr for tr in self.tracker.tracks}
         real = [st for st in self.tracker.state(t) if st["seen"] and st["cls"] in twin.CARD_OF_UNIT
@@ -895,6 +921,26 @@ class LiveMatch:
                 if part:  # the rest of a group just played, taken for another kind (an archer seen as a knight)
                     part[0].units.append(tr.id)
                     self.log.append((g, f"red {card}? no: the rest of the {part[0].card} just played"))
+                    continue
+                # Put in the middle behind their king's tower, a group splits: each unit walks out on its own side
+                # of the tower, too far apart to be taken for one play (archers seen at x 7.2 and 10.8). The
+                # first one alone put the play on its side, and both went down that lane in the simulator.
+                split = [p for p in self.accepted_red[-2:] if p.card == card and p.pos is not None
+                         and len(p.units) < GROUP.get(card, 1) and t - p.accepted_at < 1.5
+                         and self._behind_king(*p.pos) and self._behind_king(x, y) and (p.pos[0] - 9.0) * (x - 9.0) < 0]
+                if split:
+                    p, n = split[0], len(split[0].units)
+                    pos = ((p.pos[0] * n + x) / (n + 1), (p.pos[1] * n + y) / (n + 1))
+                    origin = (9.0 + max(-1.0, min(1.0, pos[0] - 9.0)), self.BEHIND_KING_Y)
+                    played = p.g
+                    if p.origin is None:  # judged before it was seen walking: it came from behind the tower too
+                        unit = self.data.card(card).unit
+                        played -= unit.deploy_time_ms / 1000.0 + math.dist(origin, p.pos) / max(0.3, unit.speed)
+                    p.origin = origin
+                    self.spawned_for[tr.id] = t
+                    self.revise_play(p, played, pos, p.units + [tr.id])
+                    self.log.append((g, f"red {card}: split behind the king's tower, put in the middle "
+                                        f"({pos[0]:.1f}, {pos[1]:.1f})"))
                     continue
                 if not self._dropped_in(tr) and self._lost_unit(tr.cls, "red", x, y, self.RETURN_WINDOW) is not None:
                     self.log.append((g, f"red {card}? no: a unit of theirs seen again (the simulator had lost it)"))

@@ -16,6 +16,7 @@ REGIONS = {
     "blue_left": (150, 1180, 380, 1235),
     "blue_right": (700, 1180, 930, 1235),
     "timer": (900, 45, 1070, 100),
+    "elixir": (280, 1822, 380, 1872),   # the elixir count over the drop left of the bar
 }
 TIMER_BOX = (905, 10, 1072, 45)      # the "Осталось" / "Доп. время" caption: red in overtime
 ELIXIR_BADGE = (950, 170, 1035, 230)  # pink drop with x2 / x3
@@ -48,25 +49,42 @@ def glyphs(img, min_h=12, max_h=48):
     def same_line(a, b):
         return abs((a[1] + a[3] / 2) - (b[1] + b[3] / 2)) < a[3] * 0.35 and 0.6 < b[3] / a[3] < 1.6
 
-    # The text line is the row with the most glyphs (a stray mark can be taller than the digits).
-    anchor = max(boxes, key=lambda a: (sum(same_line(a, b) for b in boxes), a[3]))
-    line = sorted((b for b in boxes if same_line(anchor, b)), key=lambda b: b[0])
-    # Drop stray marks far from the rest of the line.
-    if len(line) > 1:
-        kept = [line[0]]
+    def cluster(a):
+        """The longest run of glyphs on a's line with no gap wider than a digit or so (stray marks further off,
+        or a mark a little out of line with the digits, are not part of the number)."""
+        line = sorted((b for b in boxes if same_line(a, b)), key=lambda b: b[0])
+        runs = [[line[0]]]
         for b in line[1:]:
-            if b[0] - (kept[-1][0] + kept[-1][2]) < anchor[3] * 1.2:
-                kept.append(b)
-            elif len(kept) == 1:
-                kept = [b]
-        line = kept
-    # Video blur can glue neighbouring digits together: split components wider than one digit.
+            if b[0] - (runs[-1][-1][0] + runs[-1][-1][2]) < a[3] * 1.2:
+                runs[-1].append(b)
+            else:
+                runs.append([b])
+        return max(runs, key=len)
+
+    # The text line is the one with the most glyphs side by side (a stray mark can be taller than the digits, or
+    # line up with some of them: the "7" of "762" was left out when a mark at the bar's end was the anchor).
+    line = max((cluster(a) for a in boxes), key=lambda run: (len(run), max(b[3] for b in run)))
+    # Video blur can glue neighbouring digits together: split components wider than one digit, each cut at the
+    # thinnest column near where an even split would put it (digits differ in width: "30" cut in halves read "1"
+    # for the "3"). A piece that is not a digit's height is a mark glued to the line (a bright blob behind the
+    # last digit), not a digit.
     split = []
     for x, y, w, h in line:
         n = max(1, int(round(w / (0.8 * h))))
         if w > 1.25 * h and n > 1:
-            step = w / n
-            split += [(int(x + i * step), y, int(round(step)), h) for i in range(n)]
+            cols = m[y:y + h, x:x + w].sum(axis=0)
+            cuts, prev, reach = [], 0, max(1, int(0.3 * h))
+            for i in range(1, n):
+                mid = int(round(i * w / n))
+                lo, hi = max(prev + 3, mid - reach), min(w - 3, mid + reach)
+                cut = lo + int(np.argmin(cols[lo:hi + 1])) if hi > lo else mid
+                cuts.append(cut)
+                prev = cut
+            edges = [0] + cuts + [w]
+            for a, b in zip(edges, edges[1:]):
+                on = np.flatnonzero(m[y:y + h, x + a:x + b].any(axis=1))
+                if b - a >= 3 and len(on) and on[-1] - on[0] + 1 >= 0.6 * h:
+                    split.append((x + a, y, b - a, h))
         else:
             split.append((x, y, w, h))
     line = split
@@ -74,7 +92,8 @@ def glyphs(img, min_h=12, max_h=48):
     return feats, line
 
 
-# Tower HP bars at 1080x1920: x0, x1, centre rows. Towers never move, so neither do their bars.
+# Tower HP bars at 1080x1920: x0, x1, centre rows. Towers never move, but their skins put the bars higher or lower
+# (BAR_SEARCH).
 BARS = {
     "red_king": (482, 638, (52, 54, 56)),  # lower half: the HP digits are drawn over the top half
     "blue_king": (486, 638, (1448, 1450, 1452)),
@@ -85,9 +104,11 @@ BARS = {
 }
 
 
-#  The opponent's bars sit lower than BARS says in recent recordings (princess towers ~20 px, the king ~12:
-#  video31), maybe a game update; ours did not move. A bar is looked for this far below (and a little above).
-BAR_SEARCH = {"red": range(0, 36, 3), "blue": range(0, 1)}
+#  The opponent's bars sit where their towers' skin puts them: from ~13 px above BARS (a garden skin, video40)
+#  to ~20 px below (the default towers in recent recordings, video31; a wagon skin ~0, video39). Ours (the
+#  guest account's default towers) do not move. A bar is looked for over these rows around BARS.
+BAR_SEARCH = {"red": (-24, 40), "blue": (-6, 8)}
+BAR_MIN_ROWS = 4  # rows in a row that look like a bar (its body is ~10 px tall; one stray pink line is not one)
 
 
 def bar_fraction(frame, name, scale=1.0):
@@ -98,42 +119,56 @@ def bar_fraction(frame, name, scale=1.0):
     return frac
 
 
-def bar_and_shift(frame, name, scale=1.0):
-    """(HP fraction, rows below BARS where the bar was found) or (None, 0)."""
-    for dy in BAR_SEARCH[name.split("_")[0]]:
-        frac = _bar_at(frame, name, scale, dy)
-        if frac is not None:
-            return frac, dy
+def bar_and_shift(frame, name, scale=1.0, hint=None):
+    """(HP fraction, rows below BARS where the bar's top was found - negative: above) or (None, 0). The bar is
+    the longest run of bar-like rows within BAR_SEARCH of BARS. A bar with next to no HP left has no fill to find
+    it by: with hint (rows below BARS where this tower's bar was last seen) a dark bar there is read as empty."""
+    x0, x1, rows = BARS[name]
+    lo, hi = BAR_SEARCH[name.split("_")[0]]
+    ya, yb = max(0, int((rows[0] + lo) * scale)), int((rows[-1] + hi) * scale)
+    hsv = cv2.cvtColor(frame[ya:yb, int(x0 * scale):int(x1 * scale)], cv2.COLOR_BGR2HSV).astype(int)
+    fracs = [_bar_row(row, name.startswith("red")) for row in hsv]
+    best, start = None, None
+    for i, f in enumerate(fracs + [None]):
+        if f is not None:
+            start = i if start is None else start
+        elif start is not None:
+            if best is None or i - start > best[1] - best[0]:
+                best = (start, i)
+            start = None
+    if best is not None and best[1] - best[0] >= BAR_MIN_ROWS * scale:
+        top = (ya + best[0]) / scale
+        return float(np.median(fracs[best[0]:best[1]])), int(round(top - rows[0]))
+    if hint is not None:
+        dark = [(hsv[int((r + hint) * scale) - ya, :, 2] < 175).mean() for r in rows
+                if 0 <= int((r + hint) * scale) - ya < len(hsv)]
+        if len(dark) == len(rows) and min(dark) >= 0.9:
+            return 0.0, hint
     return None, 0
 
 
-def _bar_at(frame, name, scale, dy):
-    x0, x1, rows = BARS[name]
-    xa, xb = int(x0 * scale), int(x1 * scale)
-    fracs = []
-    for row in rows:
-        row += dy
-        seg = cv2.cvtColor(frame[int(row * scale):int(row * scale) + 1, xa:xb], cv2.COLOR_BGR2HSV)[0].astype(int)
-        h, s, v = seg[:, 0], seg[:, 1], seg[:, 2]
-        if name.startswith("red"):
-            fill = ((h > 160) | (h < 4)) & (s > 110) & (v > 150)
-        else:
-            fill = (h > 92) & (h < 112) & (s > 90) & (v > 160)
-        dark = (v < 175) & ~fill  # the empty part is dark (dark red in overtime, ~140)
-        n = len(fill)
-        end = 0
+def _bar_row(seg, red):
+    """Fill fraction of one pixel row across a tower's bar, or None if the row does not look like one."""
+    h, s, v = seg[:, 0], seg[:, 1], seg[:, 2]
+    if red:
+        fill = ((h > 160) | (h < 4)) & (s > 110) & (v > 150)
+    else:
+        fill = (h > 92) & (h < 112) & (s > 90) & (v > 160)
+    dark = (v < 175) & ~fill  # the empty part is dark (dark red in overtime, ~140)
+    n = len(fill)
+    first = 0
+    while first < min(4, n) and not fill[first]:  # the bar may start a pixel or two right of BARS' x0
+        first += 1
+    end = 0
+    if first < min(4, n):
+        end = first
         while end < n and (fill[end] or (end + 1 < n and fill[end + 1])):  # contiguous fill from the left
             end += 1
-        rest = n - end
-        # A real bar: the unfilled remainder is dark (or there is none).
-        if rest > 6 and dark[end:].mean() < 0.7:
-            continue
-        if end == 0 and dark.mean() < 0.9:
-            continue
-        fracs.append(end / n)
-    if len(fracs) < 2:
+    # A real bar: some fill (a standing tower has HP; a dark row elsewhere in the searched rows is no empty bar),
+    # and the unfilled remainder is dark (or there is none).
+    if end == 0 or (n - end > 6 and dark[end:].mean() < 0.7):
         return None
-    return float(np.median(fracs))
+    return end / n
 
 
 class NumberReader:
@@ -143,6 +178,7 @@ class NumberReader:
     def __init__(self, digit_templates, digit_labels):
         self.templates = np.asarray(digit_templates, np.float32)
         self.labels = [str(d) for d in digit_labels]
+        self.bar_dy = {}  # tower -> rows below BARS where its bar was last found
 
     def classify(self, feat):
         s = self.templates @ feat / len(feat)
@@ -166,15 +202,17 @@ class NumberReader:
     def read_tower_hp(self, frame, name, max_hp, scale=1.0):
         """(hp, exact) for a tower: the number if it agrees with the HP bar, else an estimate from the
         bar (exact=False); (None, False) when no bar is shown (destroyed tower, untouched king)."""
-        frac, dy = bar_and_shift(frame, name, scale)
+        frac, dy = bar_and_shift(frame, name, scale, hint=self.bar_dy.get(name, 0 if name.startswith("blue") else None))
         if frac is None:
             return None, False
-        x0, y0, x1, y1 = REGIONS[name]  # the number moves with its bar
-        digits, score = self.read_digits(self.region(frame, (x0, y0 + dy, x1, y1 + dy), scale))
-        if digits and score >= self.MIN_SCORE and len(digits) <= 4:
-            hp = int(digits)
-            if hp <= max_hp and abs(hp / max_hp - frac) <= self.BAR_TOLERANCE:
-                return hp, True
+        self.bar_dy[name] = dy  # (the opponent's towers keep their skin all match)
+        x0, y0, x1, y1 = REGIONS[name]  # the number moves with its bar (a few rows either way on some skins)
+        for oy in (dy, dy - 5, dy + 5):
+            digits, score = self.read_digits(self.region(frame, (x0, max(0, y0 + oy), x1, y1 + oy), scale))
+            if digits and score >= self.MIN_SCORE and len(digits) <= 4:
+                hp = int(digits)
+                if hp <= max_hp and abs(hp / max_hp - frac) <= self.BAR_TOLERANCE:
+                    return hp, True
         return int(round(frac * max_hp)), False
 
     def read_timer(self, frame, scale=1.0):

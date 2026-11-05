@@ -120,7 +120,7 @@ def run_tracker(frames):
     tracker = Tracker()
     for fr in frames:
         tracker.update(fr["t"], detections(fr))
-    tracks = [tr for tr in tracker.finished + tracker.tracks if tr.confirmed]
+    tracks = [tr for tr in tracker.finished + tracker.tracks if tr.confirmed and not tr.still]
     return sorted(tracks, key=lambda tr: tr.first_seen)
 
 

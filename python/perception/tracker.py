@@ -33,6 +33,7 @@ class Track:
     conf: float = 1.0  # detection confidence when seen, fading while unseen
     history: list = field(default_factory=list)
     team_votes: dict = field(default_factory=dict)  # side -> summed detection confidence
+    still: bool = False  # something drawn on the arena that the detector takes for a unit (Tracker.STILL_*)
 
     @property
     def confirmed(self):
@@ -61,6 +62,15 @@ class Tracker:
     FLIP_CONF = 0.8      # a detection of the other side's colour below this confidence may be the same unit
     FLIP_GATE = 0.8      # tiles from the track's prediction
     FLIP_PENALTY = 0.5   # a same-side match is preferred
+    # Something drawn on the arena that the detector takes for a unit stays put to the pixel: a tower skin's
+    # cannon was a "mini pekka" in half the frames of a match (video39), its 3 s spread 0.005-0.08 tiles; a unit
+    # standing to fight still moves with its animation (no 3 s window of a real unit under 0.1 tile in 4
+    # matches). From then on that spot is the thing's: its detections there (same kind and side) go to a still
+    # track, which is no unit (not in tracks).
+    STILL_WINDOW = 3.0   # s
+    STILL_SEEN = 15      # sightings in the window, at least
+    STILL_SPREAD = 0.05  # tiles: spread over the window below this = something drawn there
+    STILL_SPOT = 0.3     # tiles: a detection this close to a still spot is the thing again
 
     def __init__(self, gate=1.6, max_speed=3.0, keep_unseen=1.5, keep_hidden=4.0, keep_spell=0.4):
         self.gate = gate              # tiles: how far a detection may be from a track's prediction
@@ -69,8 +79,26 @@ class Tracker:
         self.keep_hidden = keep_hidden  # ... next to a big unit that may cover it
         self.keep_spell = keep_spell
         self.tracks = []
+        self.still = []     # tracks of things drawn on the arena (see STILL_*)
+        self.still_spots = []  # (cls, team, x, y) where such things were
         self.finished = []  # dropped tracks, kept for inspection
         self.next_id = 1
+
+    def _at_still_spot(self, cls, team, x, y):
+        return any(c == cls and side == team and abs(sx - x) < self.STILL_SPOT and abs(sy - y) < self.STILL_SPOT
+                   for c, side, sx, sy in self.still_spots)
+
+    def _is_still(self, tr, t):
+        recent = []  # newest first
+        for h in reversed(tr.history):
+            if t - h[0] > self.STILL_WINDOW:
+                break
+            recent.append(h)
+        if len(recent) < self.STILL_SEEN or recent[0][0] - recent[-1][0] < 0.8 * self.STILL_WINDOW:
+            return False
+        spread = max(max(h[1] for h in recent) - min(h[1] for h in recent),
+                     max(h[2] for h in recent) - min(h[2] for h in recent))
+        return spread < self.STILL_SPREAD
 
     def _keep_for(self, track, t):
         if track.cls in SPELLS_IN_FLIGHT or track.cls in SPELL_HITS:
@@ -89,12 +117,16 @@ class Tracker:
         # then gives a unit the other side's colour for a frame, at low confidence (both-side recordings:
         # median 0.61 vs 0.90): such a detection right on an established track is that unit, and the
         # track's side is decided by a vote over its life.
+        # A detection at a known still spot is that thing again: only still tracks take it, and units' tracks
+        # never do (a unit passing by would carry the thing off with it, or be carried off by it).
+        at_spot = [self._at_still_spot(d.cls, d.team, *d.tile) for d in detections]
+        pool = self.tracks + self.still
         pairs = []
-        for ti, tr in enumerate(self.tracks):
+        for ti, tr in enumerate(pool):
             px, py = tr.predicted(t)
             gate = self.gate + self.max_speed * min(1.0, max(0.0, t - tr.last_seen))
             for di, d in enumerate(detections):
-                if d.cls != tr.cls:
+                if d.cls != tr.cls or at_spot[di] != tr.still:
                     continue
                 dist = ((d.tile[0] - px) ** 2 + (d.tile[1] - py) ** 2) ** 0.5
                 if d.team == tr.team:
@@ -110,7 +142,7 @@ class Tracker:
                 continue
             used_t.add(ti)
             used_d.add(di)
-            tr, d = self.tracks[ti], detections[di]
+            tr, d = pool[ti], detections[di]
             dt = t - tr.last_seen
             if dt > 1e-6 and t - tr.first_seen > DROP_TIME:  # the drop-in is not walking
                 a = 0.5  # smoothing of the velocity estimate
@@ -125,13 +157,13 @@ class Tracker:
             tr.team = max(tr.team_votes, key=tr.team_votes.get)
         for di, d in enumerate(detections):
             if di not in used_d:
-                self.tracks.append(Track(self.next_id, d.cls, d.team, d.tile[0], d.tile[1], first_seen=t,
-                                         last_seen=t, conf=d.conf, history=[(t, *d.tile)],
-                                         team_votes={d.team: d.conf}))
+                pool.append(Track(self.next_id, d.cls, d.team, d.tile[0], d.tile[1], first_seen=t,
+                                  last_seen=t, conf=d.conf, history=[(t, *d.tile)],
+                                  team_votes={d.team: d.conf}, still=at_spot[di]))
                 self.next_id += 1
         # Unseen tracks fade, then go.
         alive = []
-        for ti, tr in enumerate(self.tracks):
+        for ti, tr in enumerate(pool):
             if ti in used_t or tr.last_seen == t:
                 alive.append(tr)
                 continue
@@ -142,7 +174,13 @@ class Tracker:
                 alive.append(tr)
             else:
                 self.finished.append(tr)
-        self.tracks = alive
+        for tr in alive:
+            if not tr.still and self._is_still(tr, t):
+                tr.still = True
+                if not self._at_still_spot(tr.cls, tr.team, tr.x, tr.y):
+                    self.still_spots.append((tr.cls, tr.team, tr.x, tr.y))
+        self.tracks = [tr for tr in alive if not tr.still]
+        self.still = [tr for tr in alive if tr.still]
         return self.tracks
 
     def state(self, t):

@@ -95,6 +95,19 @@ class ScreenReader:
         return {"card": self.hand_names[best], "score": float(scores[best])}
 
     # --- elixir -------------------------------------------------------------------------
+    FULL_SCORE = 0.85  # the count over the drop read "10" at least this surely
+
+    def _elixir(self, frame, layout):
+        """The bar's reading, but 10 when the count says 10: a full bar carries a message ("Шкала эликсира
+        заполнена") and a shine running along it, read as 0.5-9 (in every recording, a few times a minute -
+        the bot took itself for broke at 10 elixir)."""
+        bar = self.read_elixir(frame, layout)
+        if self.numbers is not None and bar < 10:
+            digits, score = self.numbers.read_digits(self.numbers.region(frame, "elixir", layout.scale))
+            if digits == "10" and score >= self.FULL_SCORE:
+                return 10.0
+        return bar
+
     @staticmethod
     def read_elixir(frame, layout=None):
         """Whole elixir = number of fully lit segments; the segment being filled is paler and adds
@@ -145,11 +158,13 @@ class ScreenReader:
         out = {
             "hand": self.read_hand(frame, layout),
             "next": self.read_next(frame, layout),
-            "elixir": self.read_elixir(frame, layout),
+            "elixir": self._elixir(frame, layout),
         }
         if self.numbers:
             seconds, overtime = self.numbers.read_timer(frame, layout.scale)
             out["timer"] = {"seconds": seconds, "overtime": overtime}
+            if seconds is not None and seconds >= 177 and not overtime:
+                self.numbers.bar_dy.clear()  # a new match: maybe another opponent, other tower skins
             out["elixir_multiplier"] = self.numbers.read_elixir_multiplier(frame, layout.scale)
             out["towers"] = self.read_towers(frame, layout)
         return out

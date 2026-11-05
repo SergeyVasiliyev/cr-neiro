@@ -45,15 +45,35 @@ def test_unit_lost_in_the_open_is_predicted_then_dropped():
 def test_unit_behind_a_giant_is_remembered_longer():
     tr = Tracker(keep_unseen=1.5, keep_hidden=4.0)
     t = 0.0
-    for _ in range(10):  # a mini pekka walking right behind (above on screen) a giant
-        tr.update(t, [det("giant", "red", 14.5, 20.0), det("mini_pekka", "red", 14.5, 21.0)])
+
+    def giant(k):  # standing, but moving a little with its animation as real ones do
+        return det("giant", "red", 14.5 + 0.08 * (k % 3), 20.0 - 0.06 * (k % 2))
+    for k in range(10):  # a mini pekka walking right behind (above on screen) a giant
+        tr.update(t, [giant(k), det("mini_pekka", "red", 14.5, 21.0)])
         t += DT
-    for _ in range(30):  # 3 s: only the giant is visible
-        tr.update(t, [det("giant", "red", 14.5, 20.0)])
+    for k in range(30):  # 3 s: only the giant is visible
+        tr.update(t, [giant(k)])
         t += DT
     assert len(ids(tr, t, "mini_pekka")) == 1
-    tr.update(t, [det("giant", "red", 14.5, 20.0), det("mini_pekka", "red", 14.5, 21.1)])
+    tr.update(t, [giant(0), det("mini_pekka", "red", 14.5, 21.1)])
     assert list(ids(tr, t, "mini_pekka")) == [2]  # the same unit, not a new one
+
+
+def test_something_drawn_on_the_arena_is_no_unit():
+    """A detection that stays put to the pixel (a tower skin's cannon taken for a mini pekka) is not reported
+    after a few seconds, and comes back as such right away if it was lost for a moment."""
+    tr = Tracker()
+    t = 0.0
+    for _ in range(40):
+        tr.update(t, [det("mini_pekka", "blue", 7.23, 29.5), det("knight", "blue", 3.5 + 0.1 * (t % 0.3), 8.0 + t)])
+        t += DT
+    assert ids(tr, t, "mini_pekka") == {} and len(ids(tr, t, "knight")) == 1
+    for _ in range(20):  # covered for 2 s: its track ends
+        tr.update(t, [])
+        t += DT
+    tr.update(t, [det("mini_pekka", "blue", 7.25, 29.5)])
+    tr.update(t + DT, [det("mini_pekka", "blue", 7.25, 29.5)])
+    assert ids(tr, t + DT, "mini_pekka") == {}
 
 
 def test_two_units_passing_keep_their_ids():
