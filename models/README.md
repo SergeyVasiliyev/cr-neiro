@@ -6,6 +6,8 @@ Copies of the checkpoints that matter, kept in Git LFS (`runs/` and `raw/` stay 
 | File | From | What |
 |---|---|---|
 | policy/v10_final.pt | runs/v10/final_cycle2.pt | v10 (from scratch, 2026-10-23..29, 574M steps: 460M to cycle 1's anneal, then 24 h more from 72% of the schedule with the anneal again), with the optimizer state. At temperature 0.5 over 400 games: v7e top 52.5%, si2 49%, the clone 59.3%, cycle 1's final 53.7% (cycle 1's final: 27.5%, 31%, 38.5%). Train on from it: `scripts\train_v10.bat <hours> models/policy/v10_final.pt <progress>` |
+| policy/sx1_best.pt | runs/sx1/best.pt | v10 cycle 2 after one round of search distillation (tools/search_iter.py, 2026-10-30): 52.6% vs cycle 2. Level with v7e top, si2 and cycle 2 within noise; the start of v11 (no gain, not saved) and of the next clone |
+| policy/v10_cycle1_final.pt | runs/v10/final_cycle1.pt | v10 cycle 1's annealed final, with the optimizer state; in the opponent pool and the search panel |
 | policy/si2_best.pt | runs/si2/best.pt | v7e top after search distillation (expert iteration): the strongest net so far, the default of play_vs_bot / bot_vs_bot |
 | policy/v7e_top.pt | runs/v7e/top.pt | the best of the v7 runs |
 | policy/clone_user_v1.pt | runs/clone/user_v1.pt | a clone of the user's own play |
