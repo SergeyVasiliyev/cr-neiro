@@ -25,10 +25,13 @@ BLUE, RED = crsim.Team.BLUE, crsim.Team.RED
 
 def recordings():
     """One recording per battle, (name, its red side's recording or None): of a two-sided pair the blue one, the
-    red one giving red's real plays. Left out: parts cut from a longer recording (name_1, name_2, name_v1_...)."""
+    red one giving red's real plays. Left out: old parts cut from a longer recording (name_1, name_2, name_v1_...),
+    and a recording cut into battles by tools/split_battles.py (name_b01, name_b02 ...): its battles are used (not
+    the ones kept apart as name_x03: tests, not play)."""
     names = {f[:-5] for f in os.listdir(CACHE) if f.endswith(".json")}
+    split = {re.sub(r"_b\d+$", "", n) for n in names if re.search(r"_b\d+$", n)}
     return [(n, f"{n}_red" if f"{n}_red" in names else None) for n in sorted(names)
-            if not n.endswith("_red") and not re.search(r"_\d+$|_v\d", n)]
+            if not n.endswith("_red") and not re.search(r"_\d+$|_v\d|_x\d+$", n) and n not in split]
 
 
 def follow(name, red_name, data):

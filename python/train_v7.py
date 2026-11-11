@@ -110,6 +110,21 @@ def parse_args():
                         "positions its own games never reach - a push from behind the king, a low tower, an "
                         "elixir lead - to learn how they end")
     p.add_argument("--human-every", type=float, default=1.5, help="s of a recorded battle between its start positions")
+    p.add_argument("--giant-starts", type=float, default=0.0,
+                   help="share of episodes starting right after blue put a giant behind its king at a moment the user "
+                        "would (9+ elixir, the giant in hand, no enemy troop on its side; tools/back_giant_check.py), "
+                        "from the start net's games against itself: practice in following such a push up")
+    p.add_argument("--giant-moments", type=int, default=2000, help="how many such positions")
+    p.add_argument("--push-starts", type=float, default=0.0,
+                   help="share of episodes starting at a moment of the user's pushes in the recorded two-sided battles "
+                        "(tools/push_defence_check.py: red troops worth --push-value elixir or more on blue's side; blue "
+                        "is the bot's side): live, h1 waited at 10 elixir while such a push took a tower (2026-11-10)")
+    p.add_argument("--push-every", type=float, default=0.5, help="s of a recorded battle between push positions")
+    p.add_argument("--push-value", type=float, default=5.0, help="elixir of red troops on blue's side that make a push")
+    p.add_argument("--giant-lead", type=float, nargs="+", default=None,
+                   help="with --giant-starts: blue is ahead by this much elixir when it puts the giant down (red keeps "
+                        "at most blue's elixir minus it; two numbers: drawn evenly between) - the user's idea "
+                        "(2026-11-10): a push from behind the king pays with an elixir lead, so practise building one")
     p.add_argument("--pool", nargs="*", default=POOL)
     p.add_argument("--bench", nargs="*", default=BENCH, help="opponents of the greedy evaluations")
     p.add_argument("--snapshot-every", type=float, default=2e6, help="learner steps between own snapshots")
@@ -121,7 +136,7 @@ def parse_args():
                         "a net from scratch learns the basics against them before meeting stronger nets")
     p.add_argument("--bot-share", type=float, default=0.0,
                    help="share of the pool games against the scripted bots, whatever else: self-play drifts away "
-                        "from beating them (v10 after its bots-only start: 92% -> 18% against the heuristic in 3 h)")
+                        "from beating them (v10 after its bots-only start: 92%% -> 18%% against the heuristic in 3 h)")
     p.add_argument("--strong", nargs="*", default=[],
                    help="pool nets with a share of their own (--strong-share): ones it rarely beats would get few "
                         "games by win rate alone")
@@ -199,13 +214,48 @@ def main():
     self_env = ce.VecEnv(data, [(deck, deck)], num_envs=S, bots=("noop", "noop"), seed=args.seed * 100 + 1, **common)
     pool_env = ce.VecEnv(data, [(deck, deck)], num_envs=P, bots=("noop", "noop"), seed=args.seed * 100 + 2, **common)
     L = 2 * S + P  # learner rows: self-play blue, self-play red, pool blue
+    groups = []  # (what, positions, share of the episodes): starts other than a fresh match, mixed in one list
     if args.human_starts > 0:
         import human_starts
         starts, _ = human_starts.build(data, args.human_every, log=log)  # (built on `data`, which outlives the envs)
         log(f"human starts for {args.human_starts:.0%} of the episodes: {human_starts.describe(starts, data)}")
-        for env in (self_env, pool_env):
-            env.set_starts(starts, args.human_starts)
-        del starts
+        groups.append(("human", starts, args.human_starts))
+    if args.giant_starts > 0:
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import back_giant_check
+        src = args.resume or args.init
+        if not src:
+            raise SystemExit("--giant-starts needs a net to find the moments with (--resume or --init)")
+        gargs = argparse.Namespace(model=src, opponent=src, temp=0.5, envs=100, seed=args.seed + 11,
+                                   moments=args.giant_moments, elixir=9.0, gap=20.0, lead=args.giant_lead)
+        moments = back_giant_check.collect(back_giant_check.Players(gargs, device), data, deck, gargs)
+        starts = [m[1] for m in moments]  # the copies with the giant put behind blue's king
+        lead = f", blue {'-'.join(f'{x:g}' for x in args.giant_lead)} elixir ahead" if args.giant_lead else ""
+        log(f"giant starts for {args.giant_starts:.0%} of the episodes: {len(starts)} positions with a giant just put "
+            f"behind blue's king{lead} (from {src})")
+        groups.append(("giant", starts, args.giant_starts))
+        del moments
+        torch.cuda.empty_cache()
+    if args.push_starts > 0:
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import push_defence_check
+        starts = push_defence_check.push_positions(data, every=args.push_every, push=args.push_value, log=log)
+        log(f"push starts for {args.push_starts:.0%} of the episodes: {len(starts)} positions of the user's pushes on "
+            f"blue's side in the recorded battles (blue: the bot's side, to defend)")
+        groups.append(("push", starts, args.push_starts))
+    if groups:
+        total = sum(share for _, _, share in groups)
+        if total >= 1.0:
+            raise SystemExit("the start shares add up to 100% or more: no fresh matches left")
+        # one list for set_starts: each kind drawn (with repeats) in proportion to its share
+        rng = random.Random(args.seed + 21)
+        combined = []
+        for what, starts, share in groups:
+            combined += rng.choices(starts, k=max(1, round(4000 * share / total))) if starts else []
+        kept = [env.set_starts(combined, total) for env in (self_env, pool_env)]
+        log(f"starts: {total:.0%} of the episodes from {kept[0]} of {len(combined)} positions (" +
+            ", ".join(f"{what} {share:.0%}" for what, _, share in groups) + ")")
+        del combined, groups
 
     state = {}
     if args.resume:
@@ -246,7 +296,7 @@ def main():
             log(f"pool: {spec} not found, skipped")
             continue
         onet, ock = load_policy(path, device)
-        if not ock.get("key_spots", False):
+        if "key_spots" not in ock:  # (nets from before key spots: old and weak; an all-tiles net says key_spots 0)
             log(f"pool: {spec} acts on every tile, not key spots: skipped")
             continue
         for prm in onet.parameters():
