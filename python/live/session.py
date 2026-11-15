@@ -22,6 +22,7 @@ exactly as in training (crsim.rl.encode).
 """
 import bisect
 import math
+from collections import deque
 from dataclasses import dataclass, field
 
 import crsim
@@ -120,6 +121,8 @@ class LiveMatch:
         self.tower_restored = {}  # tower name -> game s it was last brought back (see _restore_tower)
         self.sim_deaths = []     # (game s, kind, side, x, y) of units the simulator killed
         self.log = []            # (game seconds, text)
+        self.frame_times = deque(maxlen=400)  # times of the frames the tracker was given, newest last
+        self.second_names = set()  # red track ids taken (so far) for a second box on a unit already there
 
     # --- clock -----------------------------------------------------------------------------------
     @property
@@ -170,7 +173,8 @@ class LiveMatch:
         paid, spells = 0.0, []
         paired = set(self.last_pair.values())  # tracks the twin has matched with a simulated unit
         for tr in self.tracker.tracks:
-            if tr.id in self.handled or tr.id in self.own_units or tr.id in paired or t - tr.first_seen > self.FRESH_SEEN:
+            if (tr.id in self.handled or tr.id in self.second_names or tr.id in self.own_units or tr.id in paired
+                    or t - tr.first_seen > self.FRESH_SEEN):
                 continue
             x, y = tr.x, tr.y
             if tr.cls in twin.CARD_OF_UNIT and tr.team == "red":
@@ -394,6 +398,7 @@ class LiveMatch:
             if self.blue_truth is None:
                 self._watch_own_hand(t, seen)
             self._sync_own(seen)
+        self.frame_times.append(t)
         self.tracker.update(t, detections)
         self._read_unit_hp(t, detections, bars)
         self._place_manual_plays(t, g)
@@ -610,6 +615,14 @@ class LiveMatch:
             if not exact or not hp:
                 self.tower_reads.pop(name, None)
                 continue
+            king = b.find(self._tower_id(name)) if name.endswith("king") else None
+            if king is not None and not king.active and king.hp >= king.max_hp:
+                # An untouched king shows no HP bar: a bar and a number read there belong to a unit walking past
+                # (its HP bar, its level badge "11" or "1" read as the king's HP). Live 2026-11-09..11 the twin's
+                # king sat at 1 or 11 HP for whole battles and the net spelled him; 10% of the recorded positions
+                # had it. A hit on him wakes him in the simulator first, then his readings count again.
+                self.tower_reads.pop(name, None)
+                continue
             last, n = self.tower_reads.get(name, (None, 0))
             n = n + 1 if hp == last else 1
             self.tower_reads[name] = (hp, n)
@@ -729,9 +742,10 @@ class LiveMatch:
             # We know every card we played: a blue unit no play of ours explains is the detector's mistake.
             self.log.append((g, f"blue {r['cls']} seen, but none of our plays has it: not added"))
             return
-        if r["id"] in self.handled or self.red_truth is not None:  # (with the truth every play is known)
-            # Already judged not to be a play (another kind more often seen there, on a tower, the card not
-            # back in their hand): the detector's confusion, not a unit to add.
+        if r["id"] in self.handled or r["id"] in self.second_names or self.red_truth is not None:
+            # (With the truth every play is known.) Already judged not to be a play (another kind more often seen
+            # there, on a tower, the card not back in their hand, a second box on a unit there): the detector's
+            # confusion, not a unit to add.
             return
         # Theirs, and not from any play we know: a play we missed.
         x, y = tr.landing_pos()
@@ -886,6 +900,14 @@ class LiveMatch:
         for tr in fresh:
             if tr.id in self.handled:
                 continue
+            if not tr.cls.endswith("_hit"):
+                other = self._second_name(tr)
+                if other is not None:  # not judged yet: if it is a unit of its own, it will show it
+                    if tr.id not in self.second_names:
+                        self.second_names.add(tr.id)
+                        self.log.append((g, f"red {tr.cls}? not yet: only now and then, on top of the "
+                                            f"{other.team} {other.cls} there (a second box on it?)"))
+                    continue
             self.handled.add(tr.id)
             x, y = tr.landing_pos()
             seen_g = g - (t - tr.first_seen)  # battle time it was first seen
@@ -913,8 +935,16 @@ class LiveMatch:
                     continue
                 rival = self._rival_kind(tr)
                 if rival is not None:
-                    self.log.append((g, f"red {card}? no: more often seen as {rival}"))
-                    continue
+                    recent = [p.card for p in self.accepted_red[-self.CYCLE_GAP:]]
+                    counted = any(rival.id in p.units for p in self.accepted_red[-4:])  # (this unit, played as that)
+                    if counted or not (twin.CARD_OF_UNIT.get(rival.cls) in recent and card not in recent):
+                        self.log.append((g, f"red {card}? no: more often seen as {rival.cls}"))
+                        continue
+                    # One unit, two names, and the other name's card can't be back in their hand yet: this name
+                    # it is. (2026-11-15: a mini pekka behind the king seen more often as a knight was dropped,
+                    # then the knight for its card; the unit never made it into the simulator.)
+                    self.handled.add(rival.id)
+                    self.log.append((g, f"red {card}: also seen as {rival.cls}, whose card is not back in hand yet"))
                 part = [p for p in self.accepted_red[-2:] if p.pos is not None and p.card != card
                         and p.hit_t is None and len(p.units) < GROUP.get(p.card, 1)
                         and t - p.accepted_at < 1.5 and math.dist(p.pos, (x, y)) < 2.5]
@@ -997,14 +1027,64 @@ class LiveMatch:
             return tr.conf >= self.UNMISTAKABLE_CONF
         return GROUP.get(cand.card, 1) > 1 and len(cand.units) >= GROUP[cand.card]
 
+    CYCLE_GAP = 3  # twin.judge_enemy's cycle_gap: their last plays a card can't be among to be played again
+
+    # A second box on a unit already there (2026-11-15, the 32 two-sided battles): a red giant at the bridge
+    # is now and then also read as a mini pekka - 11 of the twin's 27 phantom plays, and the user's real mini
+    # pekka after it then failed the cycle check. Such a track stays on top of the older unit and is seen in
+    # few frames or unsurely: of the accepted plays that stayed within 1.7 tiles of a unit seen 2 s longer,
+    # seen in < 75% of the frames since or at confidence < 0.75 were 14 phantoms and 1 real play (a mini pekka
+    # put right behind the giant), of 27 phantoms and 518 real ones.
+    SECOND_REACH = 1.7   # tiles, all its life
+    SECOND_OLDER = 2.0   # s the other unit was seen before it
+    SECOND_WELL = 10     # sightings of the other unit, at least
+    STEADY_SEEN = 0.75   # share of the frames since it was first seen ...
+    STEADY_CONF = 0.75   # ... and confidence: seen like this, it is judged as usual
+
+    def _second_name(self, tr):
+        """The older unit (either side) this new red troop's track has stayed on top of all its life, if it is
+        seen only now and then or unsurely - the detector's second box on that unit - else None."""
+        frames = 0
+        for ft in reversed(self.frame_times):
+            if ft < tr.first_seen - 1e-6:
+                break
+            frames += 1
+        if tr.hits >= self.STEADY_SEEN * max(1, frames) and tr.conf >= self.STEADY_CONF:
+            return None
+        for o in self.tracker.tracks:
+            if o is tr or o.first_seen > tr.first_seen - self.SECOND_OLDER or o.hits < self.SECOND_WELL:
+                continue
+            recent = []
+            for h in reversed(o.history):
+                if h[0] < tr.first_seen - 0.2:
+                    break
+                recent.append(h)
+            recent.reverse()
+            ts = [h[0] for h in recent]
+            far, shared = False, 0
+            for ht, x, y in tr.history:
+                k = bisect.bisect_left(ts, ht)
+                near = [j for j in (k - 1, k) if 0 <= j < len(ts) and abs(ts[j] - ht) < 0.15]
+                if not near:
+                    continue
+                j = min(near, key=lambda j: abs(ts[j] - ht))
+                shared += 1
+                if math.dist((x, y), (recent[j][1], recent[j][2])) >= self.SECOND_REACH:
+                    far = True
+                    break
+            if not far and shared >= 3 and shared >= 0.6 * len(tr.history):
+                return o
+        return None
+
     def _rival_kind(self, tr):
-        """Another kind of red troop the detector sees on the same spot more often (one unit, two names)."""
+        """The track of another kind of red troop the detector sees on the same spot more often (one unit, two
+        names), or None."""
         x, y = tr.history[-1][1], tr.history[-1][2]
         for o in self.tracker.tracks:
             if o is tr or o.team != tr.team or o.cls == tr.cls or o.cls not in twin.CARD_OF_UNIT:
                 continue
             if math.dist((o.x, o.y), (x, y)) < 1.0 and o.hits > tr.hits:
-                return o.cls
+                return o
         return None
 
     def _undo_phantom(self, cand, t, g):

@@ -171,6 +171,13 @@ void BatchEnv::reset_slot(int i) {
         s.elixir_offset[side] = cfg_.elixir_noise_sd > 0.0
                                     ? std::normal_distribution<double>(cfg_.elixir_noise_mean, cfg_.elixir_noise_sd)(s.obs_rng)
                                     : cfg_.elixir_noise_mean;
+        rl::LiveView& lv = s.live[side];
+        lv.miss_play = cfg_.live_miss_play;
+        lv.phantom_play = cfg_.live_phantom_play;
+        lv.late_ms = cfg_.live_late_ms;
+        lv.hp_off = cfg_.live_hp_off;
+        lv.hp_off_sd = cfg_.live_hp_off_sd;
+        lv.reset(s.obs_rng());
     }
     if (s.start < 0 && cfg_.endgame_share > 0.0 &&
         std::uniform_real_distribution<double>(0.0, 1.0)(s.rng) < cfg_.endgame_share) {
@@ -245,6 +252,7 @@ void BatchEnv::write_obs(int i) {
             obs.enemy_elixir_jitter = cfg_.elixir_noise_jitter;
             obs.rng = &slots_[i].obs_rng;
         }
+        if (slots_[i].live[side].enabled()) obs.live = &slots_[i].live[side];
         rl::encode(b, static_cast<Team>(side), obs, view);
         if (slots_[i].pending[side].ticks >= 0) {  // a move still on its way: nothing to do but wait
             std::fill_n(view.action_mask, rl::kNumActions, uint8_t{0});

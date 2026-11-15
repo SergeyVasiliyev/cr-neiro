@@ -103,7 +103,8 @@ class VecEnv:
 
     def __init__(self, data, matchups, num_envs=64, bots=("heuristic", "heuristic"), decision_ticks=10,
                  seed=0, reward=None, observe_enemy_elixir=True, num_threads=0, auto_reset=True, key_spots=0,
-                 delay_ticks=(0, 0), obs_noise=(0.0, 0.0), endgame_share=0.0, elixir_noise=(0.0, 0.0, 0.0)):
+                 delay_ticks=(0, 0), obs_noise=(0.0, 0.0), endgame_share=0.0, elixir_noise=(0.0, 0.0, 0.0),
+                 live_view=(0.0, 0.0, 0.0, 0.0, 0.0)):
         self.data = data
         self.matchups = [(list(b), list(r)) for b, r in matchups]
         self.env = crsim.BatchEnv(
@@ -111,7 +112,7 @@ class VecEnv:
             blue_bot=bots[0], red_bot=bots[1], observe_enemy_elixir=observe_enemy_elixir,
             reward=reward or make_reward(), num_threads=num_threads, auto_reset=auto_reset, key_spots=key_spots,
             delay_ticks=tuple(delay_ticks), obs_noise=tuple(obs_noise), endgame_share=endgame_share,
-            elixir_noise=tuple(elixir_noise))
+            elixir_noise=tuple(elixir_noise), live_view=tuple(float(x) for x in live_view))
         self.key_spots = key_spots
         self.num_envs = num_envs
         self.decision_ticks = decision_ticks

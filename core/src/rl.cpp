@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "crsim/frame.h"
@@ -41,6 +43,74 @@ constexpr double kHpScale = 5000.0;
 
 double hp_frac(const Entity* e) { return e ? static_cast<double>(e->hp) / e->max_hp : 0.0; }
 
+// --- LiveView: per play and per unit choices from a hash, so each is made once and kept ---
+uint64_t mix64(uint64_t x) {
+    x += 0x9e3779b97f4a7c15ULL;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+double draw(const LiveView& lv, uint64_t what, uint64_t which) {  // uniform in [0, 1)
+    return static_cast<double>(mix64(lv.seed ^ mix64((which << 4) | what)) >> 11) * (1.0 / 9007199254740992.0);
+}
+enum Draw : uint64_t { kMissed = 1, kLate = 2, kPhantom = 3, kPhantomCard = 4, kHpOff = 5, kHpU1 = 6, kHpU2 = 7 };
+bool missed(const LiveView& lv, size_t play) { return draw(lv, kMissed, play) < lv.miss_play; }
+int seen_from(const LiveView& lv, const CardPlay& p, size_t play) {  // battle ms the observer first sees the play
+    return p.reveal_ms < 0 ? -1 : p.reveal_ms + static_cast<int>(draw(lv, kLate, play) * lv.late_ms);
+}
+// The opponent's play `play` as the observer knows it: nothing (missed, or not seen yet) or seen.
+bool play_seen(const LiveView& lv, const PlayerState& them, size_t play, int now) {
+    if (play >= them.plays.size() || missed(lv, play)) return false;
+    const int from = seen_from(lv, them.plays[play], play);
+    return from >= 0 && now >= from;
+}
+// A troop's HP fraction as seen: off by a normal share of its max for a few units (per unit, all its life).
+double seen_hp_frac(const LiveView& lv, const Entity& e) {
+    const double frac = static_cast<double>(e.hp) / e.max_hp;
+    if (lv.hp_off <= 0.0 || draw(lv, kHpOff, e.id) >= lv.hp_off) return frac;
+    const double u1 = std::max(1e-12, draw(lv, kHpU1, e.id)), u2 = draw(lv, kHpU2, e.id);
+    const double z = std::sqrt(-2.0 * std::log(u1)) * std::cos(6.283185307179586 * u2);
+    return std::clamp(frac + lv.hp_off_sd * z, 0.02, 1.0);
+}
+// The observer's count of the opponent's elixir now: filling up as theirs does, each play it sees taken off when
+// it is seen, a phantom play's elixir taken off now and then; held between 0 and the max like the twin's count.
+double live_enemy_elixir(LiveView& lv, const Battle& b, const PlayerState& them, double exact) {
+    const GameData& data = b.data();
+    const RulesDef& r = data.rules;
+    const int now = b.time_ms();
+    if (!lv.started) {  // (a fresh match, or one that starts from a recorded position: its count is right)
+        lv.started = true;
+        lv.count = std::clamp(exact, 0.0, r.max_elixir);
+        lv.last_ms = now;
+        lv.judged = 0;
+        while (lv.judged < them.plays.size() && them.plays[lv.judged].reveal_ms >= 0) ++lv.judged;
+    }
+    lv.count = std::min(r.max_elixir, lv.count + static_cast<double>(std::max(0, now - lv.last_ms)) *
+                                                     static_cast<double>(b.elixir_multiplier()) / r.elixir_regen_ms);
+    lv.last_ms = now;
+    while (lv.judged < them.plays.size()) {
+        const CardPlay& p = them.plays[lv.judged];
+        // Paid for once it shows (the twin's count takes a troop off the moment it is first seen,
+        // LiveMatch.enemy_elixir_seen, before its play is made out): not late like the troops themselves.
+        if (p.reveal_ms < 0) break;  // (plays come to light in the order they were made)
+        if (!missed(lv, lv.judged)) lv.count -= data.card(data.card_ids[p.card_index]).elixir;
+        if (draw(lv, kPhantom, lv.judged) < lv.phantom_play) {  // one of their cards, played as far as it knows
+            std::vector<const std::string*> deck;
+            for (const auto& c : them.hand) {
+                if (!c.empty()) deck.push_back(&c);
+            }
+            for (const auto& c : them.queue) deck.push_back(&c);
+            if (!deck.empty()) {
+                const size_t k = std::min(deck.size() - 1, static_cast<size_t>(draw(lv, kPhantomCard, lv.judged) * deck.size()));
+                lv.count -= data.card(*deck[k]).elixir;
+            }
+        }
+        lv.count = std::max(0.0, lv.count);
+        ++lv.judged;
+    }
+    return lv.count;
+}
+
 }  // namespace
 
 void check_arena(const GameData& data) {
@@ -71,6 +141,8 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
     for (const auto& p : b.pending()) {  // their blueprints are hidden from us: not spent as far as we know
         if (p.team == enemy && p.unit <= 0) visible_enemy_elixir += data.card(data.card_ids[p.card_index]).elixir;
     }
+    LiveView* live = cfg.live && cfg.live->enabled() ? cfg.live : nullptr;
+    if (live) visible_enemy_elixir = live_enemy_elixir(*live, b, them, visible_enemy_elixir);
     if (cfg.rng && (cfg.enemy_elixir_offset != 0.0 || cfg.enemy_elixir_jitter > 0.0)) {
         visible_enemy_elixir += cfg.enemy_elixir_offset +
                                 std::normal_distribution<double>(0.0, cfg.enemy_elixir_jitter)(*cfg.rng);
@@ -112,6 +184,10 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
     int filled = 0;
     for (auto it = them.plays.rbegin(); it != them.plays.rend() && filled < kHistory; ++it) {
         if (it->reveal_ms < 0) continue;  // still a blueprint only they can see
+        if (live && !play_seen(*live, them, static_cast<size_t>(std::distance(them.plays.begin(), it.base()) - 1),
+                               b.time_ms())) {
+            continue;  // missed, or not made out yet
+        }
         out.enemy_history[filled] = kFirstCardToken + it->card_index;
         out.enemy_history_age[filled] = (b.time_ms() - it->reveal_ms) / 10000.0f;
         ++filled;
@@ -182,6 +258,10 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
         }
         const Entity& e = *order[i].e;
         Vec2 p = to_own_frame(a, team, e.pos);
+        if (live && e.team != team && !e.is_building() && e.play >= 0 &&
+            !play_seen(*live, them, static_cast<size_t>(e.play), b.time_ms())) {
+            continue;  // a troop of a play it missed, or has not made out yet: the slot stays empty
+        }
         if (cfg.rng && e.team != team && !e.is_building()) {
             std::uniform_real_distribution<double> u(0.0, 1.0);
             if (cfg.miss_enemy > 0.0 && u(*cfg.rng) < cfg.miss_enemy) continue;  // not seen: the slot stays empty
@@ -195,6 +275,11 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
         f[kY] = static_cast<float>(p.y / a.height);
         f[kHpFrac] = static_cast<float>(e.hp) / e.max_hp;
         f[kHpAbs] = static_cast<float>(e.hp / kHpScale);
+        if (live && !e.is_building()) {  // (the towers' HP is read from their digits: exact)
+            const double seen = seen_hp_frac(*live, e);
+            f[kHpFrac] = static_cast<float>(seen);
+            f[kHpAbs] = static_cast<float>(seen * e.max_hp / kHpScale);
+        }
         f[kAir] = e.air ? 1.0f : 0.0f;
         f[kBuilding] = e.is_building() ? 1.0f : 0.0f;
         f[kKing] = e.kind == EntityKind::KingTower ? 1.0f : 0.0f;

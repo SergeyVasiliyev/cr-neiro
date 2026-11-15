@@ -103,6 +103,11 @@ def parse_args():
     p.add_argument("--noise", type=float, nargs=2, default=(0.03, 0.3), help="miss chance, position jitter (tiles)")
     p.add_argument("--elixir-noise", type=float, nargs=3, default=(0.0, 0.0, 0.0),
                    help="enemy elixir seen as live: per-match offset mean and spread, jitter per step (elixir)")
+    p.add_argument("--live-view", type=float, nargs=5, default=(0.0, 0.0, 0.0, 0.0, 0.0),
+                   help="the opponent seen like the live twin sees it (rl::LiveView, measured 2026-11-15 with "
+                        "tools/twin_plays_check.py, after the second-box fix: 0.035 0.03 0.9 0.05 0.3): chance a play of theirs is missed (its "
+                        "troops never seen, its elixir never taken off), chance per play of a phantom one besides, "
+                        "seconds a play is made out late at most, chance a troop's HP is seen off, by this spread")
     p.add_argument("--endgame", type=float, default=0.0,
                    help="share of episodes starting late with towers at random HP (finishing, defending, overtime)")
     p.add_argument("--human-starts", type=float, default=0.0,
@@ -121,6 +126,14 @@ def parse_args():
                         "is the bot's side): live, h1 waited at 10 elixir while such a push took a tower (2026-11-10)")
     p.add_argument("--push-every", type=float, default=0.5, help="s of a recorded battle between push positions")
     p.add_argument("--push-value", type=float, default=5.0, help="elixir of red troops on blue's side that make a push")
+    p.add_argument("--back-starts", type=float, default=0.0,
+                   help="share of episodes starting at a moment of the recorded two-sided battles where the user (red) "
+                        "has troops behind his king or a princess tower and his king still sleeps "
+                        "(tools/push_defence_check.py back_positions): live, h1 cycle 4 spelled the sleeping king there "
+                        "and its games against nets never reach such openings (2026-11-11)")
+    p.add_argument("--back-every", type=float, default=0.5, help="s of a recorded battle between back positions")
+    p.add_argument("--back-y", type=float, default=27.5,
+                   help="red troops at this y or more are behind its princess towers' line (red's king is at 29)")
     p.add_argument("--giant-lead", type=float, nargs="+", default=None,
                    help="with --giant-starts: blue is ahead by this much elixir when it puts the giant down (red keeps "
                         "at most blue's elixir minus it; two numbers: drawn evenly between) - the user's idea "
@@ -209,7 +222,7 @@ def main():
                             leak_relative=args.leak_relative)
     common = dict(decision_ticks=args.decision_ticks, reward=reward, num_threads=args.threads, key_spots=args.spots,
                   delay_ticks=tuple(args.delay), obs_noise=tuple(args.noise), endgame_share=args.endgame,
-                  elixir_noise=tuple(args.elixir_noise))
+                  elixir_noise=tuple(args.elixir_noise), live_view=tuple(args.live_view))
     S, P = args.self_envs, args.pool_envs
     self_env = ce.VecEnv(data, [(deck, deck)], num_envs=S, bots=("noop", "noop"), seed=args.seed * 100 + 1, **common)
     pool_env = ce.VecEnv(data, [(deck, deck)], num_envs=P, bots=("noop", "noop"), seed=args.seed * 100 + 2, **common)
@@ -243,6 +256,13 @@ def main():
         log(f"push starts for {args.push_starts:.0%} of the episodes: {len(starts)} positions of the user's pushes on "
             f"blue's side in the recorded battles (blue: the bot's side, to defend)")
         groups.append(("push", starts, args.push_starts))
+    if args.back_starts > 0:
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import push_defence_check
+        starts = push_defence_check.back_positions(data, every=args.back_every, y_min=args.back_y, log=log)
+        log(f"back starts for {args.back_starts:.0%} of the episodes: {len(starts)} positions with the user's troops "
+            f"behind his king or a princess tower while his king sleeps (red: the user)")
+        groups.append(("back", starts, args.back_starts))
     if groups:
         total = sum(share for _, _, share in groups)
         if total >= 1.0:

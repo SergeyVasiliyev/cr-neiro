@@ -330,7 +330,8 @@ PYBIND11_MODULE(crsim, m) {
                          bool observe_enemy_elixir, const RewardConfig& reward, int num_threads, bool auto_reset,
                          const py::object& key_spots, std::pair<int, int> delay_ticks,
                          std::pair<double, double> obs_noise, double endgame_share,
-                         std::tuple<double, double, double> elixir_noise) {
+                         std::tuple<double, double, double> elixir_noise,
+                         std::tuple<double, double, double, double, double> live_view) {
                  BatchEnvConfig cfg;
                  cfg.num_envs = num_envs;
                  cfg.num_threads = num_threads;
@@ -356,6 +357,9 @@ PYBIND11_MODULE(crsim, m) {
                  cfg.obs_jitter = obs_noise.second;
                  cfg.endgame_share = endgame_share;
                  std::tie(cfg.elixir_noise_mean, cfg.elixir_noise_sd, cfg.elixir_noise_jitter) = elixir_noise;
+                 double late_s = 0.0;
+                 std::tie(cfg.live_miss_play, cfg.live_phantom_play, late_s, cfg.live_hp_off, cfg.live_hp_off_sd) = live_view;
+                 cfg.live_late_ms = static_cast<int>(late_s * 1000.0 + 0.5);
                  return std::make_unique<BatchEnv>(data, std::move(cfg));
              }),
              py::arg("data"), py::arg("matchups"), py::arg("num_envs") = 1, py::arg("decision_ticks") = 10,
@@ -364,10 +368,13 @@ PYBIND11_MODULE(crsim, m) {
              py::arg("auto_reset") = true, py::arg("key_spots") = 0,
              py::arg("delay_ticks") = std::pair<int, int>{0, 0}, py::arg("obs_noise") = std::pair<double, double>{0.0, 0.0},
              py::arg("endgame_share") = 0.0, py::arg("elixir_noise") = std::tuple<double, double, double>{0.0, 0.0, 0.0},
+             py::arg("live_view") = std::tuple<double, double, double, double, double>{0.0, 0.0, 0.0, 0.0, 0.0},
              "delay_ticks: (min, max) ticks a move lands after the decision; "
              "obs_noise: (chance to miss an enemy troop, position jitter in tiles); "
              "endgame_share: episodes that start late, towers at random HP (see BatchEnvConfig); "
-             "elixir_noise: (mean, spread) of a per-match offset of the enemy elixir seen, and its jitter per step")
+             "elixir_noise: (mean, spread) of a per-match offset of the enemy elixir seen, and its jitter per step; "
+             "live_view: the opponent seen like the live twin sees it (rl::LiveView): (chance a play is missed, chance of "
+             "a phantom play per play, seconds a play is made out late at most, chance a troop's HP is seen off, its spread)")
         .def("reset", &BatchEnv::reset)
         .def(
             "set_bot",

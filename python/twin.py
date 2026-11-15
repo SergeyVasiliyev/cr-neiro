@@ -92,14 +92,33 @@ EMPTY_FOR = 0.25  # s a slot must stay empty to count as a play (a played card's
                   # a greyed-out card sometimes reads as empty for a frame)
 
 
+REFILL_EMPTY = 1.3  # s a played card's slot stays empty before the next card slides in (rules.json card_refill_ms)
+
+
 def own_plays_from_hand(frames):
-    """A card that leaves its slot (the slot stays empty) was played when it first read empty."""
+    """A card that leaves its slot (the slot stays empty) was played. Its slot empties when the drag starts,
+    and a player may hold the card for seconds before putting it down, or take it back (2026-11-15: a held
+    giant came back to its slot 1.6 s later, the elixir untouched). So the play counts only once the slot
+    fills again: with the same card it was taken back (no play); with the next card it was put down
+    REFILL_EMPTY before that card started sliding in. One still waiting at the end counts when it emptied."""
     plays = []
     last = [None] * 4        # last card read in each slot
     empty_since = [None] * 4  # (time first read empty, the card that was there)
+    waiting = [None] * 4     # [the play of the card that left the slot, when its slot first read '?']
+    taken_back = []
     for fr in frames:
         t = fr["t"]
         for slot, card in enumerate(fr["hand"]):
+            w = waiting[slot]
+            if w is not None and card is not None:
+                if card == "?":
+                    w[1] = w[1] if w[1] is not None else t  # something sliding into the slot
+                    continue
+                if card == w[0].card:
+                    taken_back.append(w[0])  # the same card back in its slot: it was never put down
+                else:
+                    w[0].t = max(w[0].t, (w[1] if w[1] is not None else t) - REFILL_EMPTY)
+                waiting[slot] = None
             if card == "?":
                 continue  # moving: being dragged or sliding in
             if card is None:
@@ -107,13 +126,15 @@ def own_plays_from_hand(frames):
                     empty_since[slot] = (t, last[slot])
                 if empty_since[slot] is not None and t - empty_since[slot][0] >= EMPTY_FOR:
                     plays.append(Play("blue", empty_since[slot][1], empty_since[slot][0] - 0.05, source="hand"))
+                    waiting[slot] = [plays[-1], None]
                     empty_since[slot] = None
                     last[slot] = None
             else:
                 if empty_since[slot] is not None and card == empty_since[slot][1]:
                     empty_since[slot] = None  # a flicker: the same card is still there
                 last[slot] = card
-    return plays
+    gone = {id(p) for p in taken_back}
+    return sorted((p for p in plays if id(p) not in gone), key=lambda p: p.t)
 
 
 def run_tracker(frames):

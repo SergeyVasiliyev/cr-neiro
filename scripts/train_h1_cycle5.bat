@@ -44,3 +44,4 @@ for %%O in (runs/sx1/best.pt runs/v7e/top.pt runs/si2/best.pt runs/v11/final.pt 
 echo === waiting at the user's pushes: cycle 5 final >> %OUT%
 %PY% tools\push_defence_check.py --model runs/h1/final.pt --rollouts 4 >> %OUT% 2>&1
 echo === all done %date% %time% >> %OUT%
+call scripts\night_20261112.bat

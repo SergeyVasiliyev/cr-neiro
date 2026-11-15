@@ -32,6 +32,35 @@ constexpr int kFirstCardToken = 3;
 inline int vocab_size(const GameData& data) { return kFirstCardToken + static_cast<int>(data.cards.size()); }
 inline int card_token(const CardDef& card) { return kFirstCardToken + card.index; }
 
+// The live bot sees the opponent through its digital twin (python/live/session.py), which follows the screen. On
+// 32 two-sided battles (2026-11-15, tools/twin_plays_check.py) the twin missed 3.5% of the user's plays (their
+// units never showed, their elixir was never taken off), added 3% phantom ones (elixir taken off for nothing), had a
+// new troop ~0.45 s late on average, and the HP of ~5% of the units off by ~30% of their max. A LiveView makes an
+// observation like that: its own count of the opponent's elixir (filling up, the plays it sees taken off, held
+// between 0 and the max like the twin's), and per play and per unit choices drawn from a hash of its seed. One per
+// match and observer: the caller keeps it between observations and resets it, with a new seed, every match.
+struct LiveView {
+    double miss_play = 0.0;     // chance an opponent play is missed
+    double phantom_play = 0.0;  // chance per opponent play seen of a phantom one besides (a card of their deck)
+    int late_ms = 0;            // an opponent play is made out (its troops, its place in the history) 0..late_ms late
+    double hp_off = 0.0;        // chance a troop's HP is seen off ...
+    double hp_off_sd = 0.0;     // ... by a normal share of its max, all its life
+    uint64_t seed = 0;
+    // the observer's state
+    bool started = false;
+    double count = 0.0;  // its count of the opponent's elixir
+    int last_ms = 0;
+    size_t judged = 0;   // opponent plays (in order) already taken off the count
+    bool enabled() const { return miss_play > 0.0 || phantom_play > 0.0 || late_ms > 0 || hp_off > 0.0; }
+    void reset(uint64_t new_seed) {
+        seed = new_seed;
+        started = false;
+        count = 0.0;
+        last_ms = 0;
+        judged = 0;
+    }
+};
+
 struct ObsConfig {
     // Not shown in the game, but computable from what is visible: the opponent's elixir as if their
     // cards still waiting as blueprints (hidden from us) had not been played yet.
@@ -49,6 +78,8 @@ struct ObsConfig {
     double enemy_elixir_offset = 0.0;
     double enemy_elixir_jitter = 0.0;
     std::mt19937_64* rng = nullptr;
+    // Seen like the live bot sees it (LiveView), if set and enabled; it is updated by every observation.
+    LiveView* live = nullptr;
 };
 
 // Caller-owned buffers for one player's observation.

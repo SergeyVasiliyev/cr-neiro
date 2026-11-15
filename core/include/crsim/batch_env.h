@@ -76,6 +76,14 @@ struct BatchEnvConfig {
     double elixir_noise_mean = 0.0;
     double elixir_noise_sd = 0.0;
     double elixir_noise_jitter = 0.0;
+    // The opponent seen like the live bot's twin sees it (rl::LiveView): plays missed (their troops never seen,
+    // their elixir never taken off), phantom plays (elixir taken off for nothing), plays made out up to
+    // live_late_ms late, troops' HP seen off. All 0: exact.
+    double live_miss_play = 0.0;
+    double live_phantom_play = 0.0;
+    int live_late_ms = 0;
+    double live_hp_off = 0.0;
+    double live_hp_off_sd = 0.0;
     // Endgame starts: this share of episodes begins late (a random time in [from, to) ms, nobody having played
     // so far: 0:0), the princess towers at random HP (a quarter within a spell's reach, 30-300 HP, a quarter
     // low), random elixir, a random point in the cycle - to learn what full games rarely show: finishing a low
@@ -151,6 +159,7 @@ private:
         std::mt19937_64 rng;
         std::mt19937_64 obs_rng;     // observation noise only, so it never changes how games go
         double elixir_offset[2] = {0.0, 0.0};  // this match's enemy elixir offset per side (elixir_noise_*)
+        rl::LiveView live[2];  // each side's view of the other this match (live_*)
         // A move decided but not landed yet (delay_ticks): until it lands that side only waits, like the
         // live bot while its touches go through.
         struct Pending {

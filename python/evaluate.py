@@ -38,6 +38,9 @@ def main():
     p.add_argument("--human-starts", type=float, default=0.0,
                    help="this share of the games starts at a moment of a recorded human battle (python/human_starts.py). "
                         "Those positions are not even for blue and red: compare a net from both sides")
+    p.add_argument("--live-view", type=float, nargs=5, default=(0.0, 0.0, 0.0, 0.0, 0.0),
+                   help="both sides see the other like the live bot's twin does (train_v7.py --live-view; measured "
+                        "2026-11-15: 0.035 0.03 0.9 0.05 0.3); all 0: exactly")
     args = p.parse_args()
 
     data = ce.load_data()
@@ -61,7 +64,7 @@ def main():
 
     bots = tuple(pl if isinstance(pl, str) else "noop" for pl in players)
     env = ce.VecEnv(data, [(deck, opp_deck)], num_envs=min(args.envs, args.games), bots=bots,
-                    decision_ticks=step_ticks, seed=args.seed, key_spots=tuple(key_spots))
+                    decision_ticks=step_ticks, seed=args.seed, key_spots=tuple(key_spots), live_view=tuple(args.live_view))
     if args.human_starts > 0:
         import human_starts
         env.set_starts(human_starts.build(data, log=lambda _: None)[0], args.human_starts)

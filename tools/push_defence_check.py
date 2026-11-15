@@ -72,8 +72,49 @@ def push_positions(data, names=None, every=0.5, push=5.0, log=print):
     return out
 
 
+def back_value(b, data, y_min=27.5):
+    """Elixir of red's troops behind its princess towers' line (y >= y_min: behind its king or a princess tower)
+    while its king sleeps with both princess towers up, else 0 - each unit its share of its card."""
+    asleep, princesses = False, 0
+    for e in b.entities:
+        if e.is_building and e.team == RED and e.hp > 0:
+            if e.kind == crsim.EntityKind.KING_TOWER:
+                asleep = not e.active
+            else:
+                princesses += 1
+    if not asleep or princesses < 2:
+        return 0.0
+    value = 0.0
+    for e in b.entities:
+        if e.is_building or e.team != RED or e.hp <= 0 or e.card_index < 0 or e.pos.y < y_min:
+            continue
+        cd = data.card(data.card_ids[e.card_index])
+        value += cd.elixir / max(1, cd.count)
+    return value
+
+
+def back_positions(data, names=None, every=0.5, y_min=27.5, log=print):
+    """Training starts (train_v7.py --back-starts): the twin's battle every `every` s of the recorded two-sided
+    battles (the bot blue, the user red) where the user has troops behind his king or a princess tower (y >= y_min)
+    and his king still sleeps. Live on 2026-11-11 h1 cycle 4 threw arrows / a fireball at the user's sleeping king
+    there (waking him for the rest of the game), and its own giants all went to the bridge; its games against nets
+    never reach such openings. Built on `data` (it must outlive the envs that start from them)."""
+    out, battles = [], 0
+    for name in names or two_sided_battles():
+        try:
+            got = human_starts.recording_starts(name, f"{name}_red", data, every=every)
+        except Exception as e:  # a battle the twin cannot follow costs only its positions
+            log(f"back starts: {name} skipped ({type(e).__name__}: {e})")
+            continue
+        battles += 1
+        out += [b for _, _, b in got if back_value(b, data, y_min) > 0]
+    log(f"back starts: {len(out)} positions from {battles} battles")
+    return out
+
+
 def moments(players, data, args):
-    """[(A battle, B battle, how much the net wants to wait there, game ms)] at the user's pushes."""
+    """[(A battle, B battle, how much the net wants to wait there, game ms, what it is, recording, battle no)] at
+    the user's pushes."""
     net, device = players.nets[0], players.device
     b_net, b_spots = None, 0
     if args.b_net:
@@ -122,7 +163,7 @@ def moments(players, data, args):
             pos = crsim.rl.cell_position(b, BLUE, cell)
             out.append((a_battle, b_battle, p_wait, b.time_ms, f"{name} {g:.0f}s: push {value:.1f} elixir at "
                         f"({centre[0]:.1f},{centre[1]:.1f}), blue {p.elixir:.1f} elixir, waits {p_wait:.0%}, "
-                        f"best other: {list(p.hand)[slot]} at ({pos.x:.1f},{pos.y:.1f})"))
+                        f"best other: {list(p.hand)[slot]} at ({pos.x:.1f},{pos.y:.1f})", name, no))
             last[no] = g
     print(f"{len(out)} pushes in {time.time() - t0:.0f} s; the net wants to wait there: median "
           f"{np.median([m[2] for m in out]):.0%}, >= 90% at {np.mean([m[2] >= 0.9 for m in out]):.0%} of them",
