@@ -83,7 +83,8 @@ def sim_delay(data, card):
 
 
 def main():
-    files = sys.argv[1:] or sorted(glob.glob(os.path.join(ROOT, "raw", "perception", "cache", "video*.json")))
+    files = sys.argv[1:] or sorted(p for p in glob.glob(os.path.join(ROOT, "raw", "perception", "cache", "video*.json"))
+                                    if not p.endswith("_clocks.json"))  # (deploy clock caches: another format)
     data = ce.load_data()
     g = game_delays(files, data)
     print(f"{len(files)} recordings: first hit on a tower, seconds after the troop stops next to it")

@@ -150,6 +150,10 @@ public:
     // slot), next: the card shown as next ("" = unknown). The rest of the cycle keeps its simulated order.
     void set_hand(Team team, const std::array<std::string, kHandSize>& hand, const std::string& next);
     void set_elixir(Team team, double elixir);
+    // What the other player can know: the team's cards still blueprints (none of their units out yet, a spell
+    // not launched) are taken out, their elixir given back. For a lookahead from the opponent's view in the
+    // simulator, as fair as the live twin, which can't see them either. Returns the elixir given back.
+    double forget_blueprints(Team team);
     // Digital twin corrections from what the screen shows. Return false if there is no such entity.
     bool twin_move(EntityId id, Vec2 pos);         // a troop is seen somewhere else
     bool twin_set_hp(EntityId id, int hp);         // a tower (or troop) HP read from the screen

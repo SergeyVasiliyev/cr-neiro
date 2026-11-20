@@ -71,7 +71,7 @@ class _Runner:
 class SearchPlayer:
     def __init__(self, net, ckpt, device="cuda", candidates=5, rollouts=6, horizon_s=4.0, temperature=0.5,
                  rollout_temperature=1.0, think_below_wait=0.9, opponent_net=None, explore=0, think_anyway=0.0,
-                 seed=0):
+                 seed=0, fair=False, think_at_push=False):
         """candidates: the policy's most likely plays tried (plus waiting); rollouts: copies played out per
         candidate; horizon_s: how far ahead; think_below_wait: search only when the policy's chance of waiting is
         below this (it wants to play something) - otherwise it just waits.
@@ -79,7 +79,16 @@ class SearchPlayer:
         explore: this many more candidates, each a random card in hand and a random spot it may go (a play the
         policy gives ~0 chance is never tried, so never learned - a spell finishing a tower was one: the net 0/96,
         the search 39/48); think_anyway: the share of the moments the policy is sure to wait that are searched
-        anyway."""
+        anyway.
+        fair: in the simulator, look ahead only from what the live twin can know - the opponent's cards still
+        blueprints unseen (taken out, their elixir given back) and his elixir off as much as the twin's estimate
+        (tools/twin_plays_check.py: within 0.5 at ~80%, 2+ off at ~11%). Live, the twin's battle is like that
+        already.
+        think_at_push: search also while an enemy troop stands at the bridge or on our side, however sure the
+        policy is to wait. Those are the moments it learned to sit out: at the user's giant + mini pekka pushes,
+        cycle 9 waited ~2 s (wait 0.95-1.00), and its own playouts found answering at once better (2026-11-16)."""
+        self.fair = fair
+        self.think_at_push = think_at_push
         self.net, self.device = net, device
         self.opp = opponent_net or net
         self.key_spots = int(ckpt.get("key_spots", 0))
@@ -108,14 +117,40 @@ class SearchPlayer:
             logits, _ = self.net(obs)
         return logits[0].float()
 
+    PUSH_Y = 19.0  # own frame: an enemy troop this far down (their side of the bridge, or ours) is coming
+
+    @classmethod
+    def pushed(cls, battle, team):
+        """Has the opponent a troop at the bridge or on our side?"""
+        for e in battle.entities:
+            if e.team != team and not e.is_building and e.hp > 0:
+                y = e.pos.y if team == crsim.Team.BLUE else 32.0 - e.pos.y
+                if y <= cls.PUSH_Y:
+                    return True
+        return False
+
+    def _as_known(self, battle, team):
+        """fair: the battle as the live twin would have it (see __init__)."""
+        b = battle.clone()
+        other = crsim.Team.RED if team == crsim.Team.BLUE else crsim.Team.BLUE
+        b.forget_blueprints(other)
+        e = b.player(other).elixir
+        off = self.rng.uniform(-0.5, 0.5) if self.rng.random() < 0.8 else self.rng.normal(0.0, 2.0)
+        b.set_elixir(other, e + off)
+        return b
+
     @torch.no_grad()
     def decide(self, battle, team, logits=None):
         """logits: the policy's for this position, if already at hand (e.g. both sides in one batch)."""
         self.last = None
+        if self.fair:
+            battle = self._as_known(battle, team)
+            logits = None  # (from what it knows)
         logits = self._policy(battle, team) if logits is None else logits
         p = torch.softmax(logits / self.temp, -1)
         legal = logits > -1e8
-        if int(legal.sum()) <= 1 or (p[0] >= self.think and not (self.think_anyway and self.rng.random() < self.think_anyway)):
+        if int(legal.sum()) <= 1 or (p[0] >= self.think and not (self.think_at_push and self.pushed(battle, team))
+                                     and not (self.think_anyway and self.rng.random() < self.think_anyway)):
             return int(torch.distributions.Categorical(p).sample())  # nothing to weigh: as the policy says
         self.searches += 1
         top = [int(a) for a in torch.topk(p[1:], min(self.k, int((p[1:] > 0).sum()))).indices + 1]
@@ -136,6 +171,10 @@ class SearchPlayer:
         for ci, a in enumerate(cands):
             for _ in range(self.r):
                 b = battle.clone()
+                # The live twin's battle never ends on its own (follow_real: the screen says when): its copies
+                # must, or a tower falling in overtime, the king, the clock running out would be judged only by
+                # the critic, at a moment it never saw in training (fixed 2026-11-16; the simulator's games end).
+                b.set_follow_real(False)
                 if a:
                     crsim.rl.apply_action(b, team, a)
                 games.append(b)

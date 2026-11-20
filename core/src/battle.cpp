@@ -405,6 +405,28 @@ void Battle::set_elixir(Team team, double elixir) {
     players_[idx(team)].elixir = std::clamp(elixir, 0.0, static_cast<double>(data_.rules.max_elixir));
 }
 
+double Battle::forget_blueprints(Team team) {
+    std::vector<int> hidden;  // plays none of whose units is out yet (a group's first unit comes first)
+    for (const auto& d : pending_) {
+        if (d.team == team && d.unit <= 0 &&
+            std::find(hidden.begin(), hidden.end(), d.play_index) == hidden.end()) {
+            hidden.push_back(d.play_index);
+        }
+    }
+    if (hidden.empty()) return 0.0;
+    double refund = 0.0;
+    for (const auto& d : pending_) {
+        if (d.team == team && d.unit <= 0) refund += data_.card(data_.card_ids[d.card_index]).elixir;
+    }
+    pending_.erase(std::remove_if(pending_.begin(), pending_.end(), [&](const PendingDeploy& d) {
+                       return d.team == team &&
+                              std::find(hidden.begin(), hidden.end(), d.play_index) != hidden.end();
+                   }),
+                   pending_.end());
+    set_elixir(team, players_[idx(team)].elixir + refund);
+    return refund;
+}
+
 void Battle::start_play(Team team, int hand_slot, std::optional<Vec2> pos) {
     PlayerState& p = players_[idx(team)];
     const std::string card_id = p.hand[hand_slot];

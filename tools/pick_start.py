@@ -29,6 +29,12 @@ def main():
     p.add_argument("--cycle", type=int, default=5, help="the new final's cycle number (for the bot scripts' note)")
     p.add_argument("--old-cycle", type=int, default=None, help="the old one's cycle number (default: --cycle - 1)")
     p.add_argument("--bot-scripts", nargs="*", default=["scripts/play_vs_bot.bat", "scripts/play_recorded.bat"])
+    p.add_argument("--user-gain", type=float, default=None,
+                   help="also weigh the user starts (evaluate.py --user-starts: the new and the old net as blue against "
+                        "the old one, the user's real cards scripted; sections '=== user starts ...: new as blue' and "
+                        "'...: old as blue'): the new one is taken if it won the head-to-head and is not this much worse "
+                        "there, or if it is at least this much better there and scored --min-score head-to-head")
+    p.add_argument("--min-score", type=float, default=0.45)
     args = p.parse_args()
 
     if os.path.exists(args.new) and not os.path.exists(args.save_as):
@@ -39,6 +45,15 @@ def main():
     first = re.search(r"score ([0-9.]+) \+- ([0-9.]+)", text)  # the first match: the new final vs the old one
     score = float(first.group(1)) if first else None
     better = score is not None and score > 0.5 and os.path.exists(args.save_as)
+    if args.user_gain is not None and score is not None and os.path.exists(args.save_as):
+        user = {m.group(1): float(m.group(2)) for m in
+                re.finditer(r"=== user starts[^\n]*?: (new|old) as blue.*?score ([0-9.]+) \+-", text, re.S)}
+        if "new" in user and "old" in user:
+            gain = user["new"] - user["old"]
+            better = (score > 0.5 and gain > -args.user_gain) or (score >= args.min_score and gain >= args.user_gain)
+            print(f"user starts: new {user['new']:.3f}, old {user['old']:.3f} (gain {gain:+.3f}); head-to-head {score:.3f}")
+        else:
+            print("user starts: not found, the head-to-head alone decides")
     if better:
         start, other = args.save_as, args.old
     else:

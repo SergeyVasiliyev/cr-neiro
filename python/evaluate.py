@@ -38,6 +38,13 @@ def main():
     p.add_argument("--human-starts", type=float, default=0.0,
                    help="this share of the games starts at a moment of a recorded human battle (python/human_starts.py). "
                         "Those positions are not even for blue and red: compare a net from both sides")
+    p.add_argument("--user-starts", choices=("push", "back", "both"), default=None,
+                   help="every game starts at a moment of the recorded two-sided battles - the user's pushes on blue's "
+                        "side (push), his troops behind his king (back), or both - and red (his side) puts down his real "
+                        "next cards for --follow-user s, then the opponent plays on. Blue (the model) is the bot's side: "
+                        "how it copes with what he really did, not with a net's follow-up. Compare nets as blue against "
+                        "the same opponent")
+    p.add_argument("--follow-user", type=float, default=15.0, help="with --user-starts: s of his real cards (0: none)")
     p.add_argument("--live-view", type=float, nargs=5, default=(0.0, 0.0, 0.0, 0.0, 0.0),
                    help="both sides see the other like the live bot's twin does (train_v7.py --live-view; measured "
                         "2026-11-15: 0.035 0.03 0.9 0.05 0.3); all 0: exactly")
@@ -69,6 +76,19 @@ def main():
         import human_starts
         env.set_starts(human_starts.build(data, log=lambda _: None)[0], args.human_starts)
         env.reset()
+    if args.user_starts:
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import push_defence_check as pdc
+        positions, scripts = [], [] if args.follow_user > 0 else None
+        if args.user_starts in ("push", "both"):
+            positions += pdc.push_positions(data, log=lambda _: None, follow=args.follow_user, scripts=scripts)
+        if args.user_starts in ("back", "both"):
+            positions += pdc.back_positions(data, log=lambda _: None, follow=args.follow_user, scripts=scripts)
+        kept = env.set_starts(positions, 1.0, scripts)
+        env.reset()
+        print(f"user starts ({args.user_starts}): {kept} positions"
+              + (f", red puts down the user's real cards for {args.follow_user:g} s" if scripts is not None else ""))
     step_no = 0
     results, crowns, lengths = [], [], []
     started = env.num_envs
@@ -127,6 +147,8 @@ def main():
     print(f"  avg crowns {c[:, 0].mean():.2f} : {c[:, 1].mean():.2f}, avg match length {np.mean(lengths):.0f}s")
     se = np.sqrt(results.mean() * (1 - results.mean()) / len(results))
     print(f"  score {results.mean():.3f} +- {1.96 * se:.3f} (95%)")
+    if args.user_starts and args.follow_user > 0:
+        print(f"  the user's scripted cards put down {env.env.script_made}, left out {env.env.script_dropped}")
     if play_elixir:
         pe, n = np.array(play_elixir), max(1, len(crowns))  # (all finished games, a few past --games)
         print(f"  blue's style: {len(pe) / n:.1f} cards per game, elixir when playing {pe.mean():.1f} "

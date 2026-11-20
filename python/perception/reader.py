@@ -40,6 +40,7 @@ def saturation(img):
 
 class ScreenReader:
     MIN_SCORE = 0.5  # template correlation below this = card in motion / unreadable
+    SURE_UNRAISED = 0.75  # a card this sure in its place is not the raised (selected) one: no other offsets tried
 
     def __init__(self, templates_path=DEFAULT_TEMPLATES):
         if not os.path.exists(templates_path):
@@ -72,6 +73,8 @@ class ScreenReader:
                 name, score = self.classify_hand_crop(crop)
                 if score > best[1]:
                     best = (name, score, raise_px)
+                if raise_px == 0 and score >= self.SURE_UNRAISED:
+                    break  # (in its place: the raised offsets never did better, 0 of 9000 reads - saves ~3 ms)
             name, score, raise_px = best
             crop = layout.hand_slot(frame, slot, raise_px)
             out.append({
@@ -113,12 +116,12 @@ class ScreenReader:
         """Whole elixir = number of fully lit segments; the segment being filled is paler and adds
         its filled fraction."""
         layout = layout or Layout.for_frame(frame)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         full = 0
         partial = 0.0
         for row in Layout.ELIXIR_ROWS:
             y = layout.s(row)
-            h, s, v = (hsv[y, :, c].astype(int) for c in range(3))
+            hsv = cv2.cvtColor(frame[y:y + 1], cv2.COLOR_BGR2HSV)[0]  # (only this row: the whole frame cost ~2 ms)
+            h, s, v = (hsv[:, c].astype(int) for c in range(3))
             pink = (h > 135) & (h < 172) & (v > 110)
             bright = pink & (s > 90)
             pale = pink & (s > 35)

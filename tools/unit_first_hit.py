@@ -25,7 +25,14 @@ VICTIMS = {"knight", "mini_pekka", "giant", "musketeer", "archer"}
 
 
 def main():
-    files = sys.argv[1:] or sorted(glob.glob(os.path.join(ROOT, "raw", "perception", "cache", "video*.json")))
+    args = sys.argv[1:]
+    settled = 0.0
+    if "--settled" in args:  # leave out attackers on the field for less than this long (s): no deploy time inside
+        i = args.index("--settled")
+        settled = float(args[i + 1])
+        del args[i:i + 2]
+    files = args or sorted(p for p in glob.glob(os.path.join(ROOT, "raw", "perception", "cache", "video*.json"))
+                                    if not p.endswith("_clocks.json"))  # (deploy clock caches: another format)
     data = ce.load_data()
     unit = {cls: data.card(card).unit for cls, card in CARD.items()}
     delays = {cls: [] for cls in CARD}
@@ -52,6 +59,10 @@ def main():
                     gap = math.dist(a.tile, v.tile) - unit[a.cls].radius - unit.get(v.cls, unit["knight"]).radius
                     if gap > unit[a.cls].attack.range + 0.2:
                         continue
+                    seen_before = [j for j in range(max(0, k - 40), k) if f["t"] - frames[j]["t"] <= settled]
+                    if settled and (f["t"] - frames[max(0, k - 40)]["t"] < settled or any(
+                            not any(o.cls == a.cls and o.team == a.team for o in dets[j]) for j in seen_before)):
+                        continue  # just put down (or not seen all along): its deploy time would count
                     key = (a.cls, a.team, v.cls)
                     if any(key == d[0] and f["t"] - d[1] < 8.0 for d in done):
                         continue
@@ -70,7 +81,8 @@ def main():
                         if vi is not None and vi in barred[j]:
                             delays[a.cls].append(frames[j]["t"] - f["t"])
                             break
-    print(f"{len(files)} recordings: first hit on an enemy troop, s from coming into reach")
+    print(f"{len(files)} recordings: first hit on an enemy troop, s from coming into reach"
+          + (f" (attackers on the field {settled:g} s or more)" if settled else ""))
     print(f"{'attacker':11s} {'game median':>12s} {'25%..75%':>14s} {'n':>4s}   {'sim first hit':>13s}")
     for cls in CARD:
         v = sorted(delays[cls])

@@ -55,19 +55,26 @@ def push_value(b, data):
     return value, (np.mean(xs), np.mean(ys)) if xs else None
 
 
-def push_positions(data, names=None, every=0.5, push=5.0, log=print):
+def push_positions(data, names=None, every=0.5, push=5.0, log=print, follow=0.0, scripts=None):
     """Training starts (train_v7.py --push-starts): the twin's battle every `every` s of the recorded two-sided
     battles (from the bot's recording: the bot blue, the user red) where red has `push` elixir or more of troops on
-    blue's side. Built on `data` (it must outlive the envs that start from them)."""
+    blue's side. Built on `data` (it must outlive the envs that start from them). follow > 0 and a list `scripts`:
+    one script per position is appended to it - the user's real plays for `follow` s from there
+    (human_starts.red_script, for BatchEnv.set_starts)."""
     out, battles = [], 0
     for name in names or two_sided_battles():
         try:
-            got = human_starts.recording_starts(name, f"{name}_red", data, every=every)
+            got = human_starts.recording_starts(name, f"{name}_red", data, every=every,
+                                                follow_s=follow if scripts is not None else 0.0)
         except Exception as e:  # a battle the twin cannot follow costs only its positions
             log(f"push starts: {name} skipped ({type(e).__name__}: {e})")
             continue
         battles += 1
-        out += [b for _, _, b in got if push_value(b, data)[0] >= push]
+        for item in got:
+            if push_value(item[2], data)[0] >= push:
+                out.append(item[2])
+                if scripts is not None:
+                    scripts.append(item[3] if len(item) > 3 else (1, 0, []))
     log(f"push starts: {len(out)} positions from {battles} battles")
     return out
 
@@ -93,21 +100,27 @@ def back_value(b, data, y_min=27.5):
     return value
 
 
-def back_positions(data, names=None, every=0.5, y_min=27.5, log=print):
+def back_positions(data, names=None, every=0.5, y_min=27.5, log=print, follow=0.0, scripts=None):
     """Training starts (train_v7.py --back-starts): the twin's battle every `every` s of the recorded two-sided
     battles (the bot blue, the user red) where the user has troops behind his king or a princess tower (y >= y_min)
     and his king still sleeps. Live on 2026-11-11 h1 cycle 4 threw arrows / a fireball at the user's sleeping king
     there (waking him for the rest of the game), and its own giants all went to the bridge; its games against nets
-    never reach such openings. Built on `data` (it must outlive the envs that start from them)."""
+    never reach such openings. Built on `data` (it must outlive the envs that start from them). follow and scripts:
+    as push_positions."""
     out, battles = [], 0
     for name in names or two_sided_battles():
         try:
-            got = human_starts.recording_starts(name, f"{name}_red", data, every=every)
+            got = human_starts.recording_starts(name, f"{name}_red", data, every=every,
+                                                follow_s=follow if scripts is not None else 0.0)
         except Exception as e:  # a battle the twin cannot follow costs only its positions
             log(f"back starts: {name} skipped ({type(e).__name__}: {e})")
             continue
         battles += 1
-        out += [b for _, _, b in got if back_value(b, data, y_min) > 0]
+        for item in got:
+            if back_value(item[2], data, y_min) > 0:
+                out.append(item[2])
+                if scripts is not None:
+                    scripts.append(item[3] if len(item) > 3 else (1, 0, []))
     log(f"back starts: {len(out)} positions from {battles} battles")
     return out
 

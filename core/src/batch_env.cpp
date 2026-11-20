@@ -62,7 +62,17 @@ void BatchEnv::set_bot(int env, int side, BotKind kind) {
     slots_[env].bot_kind[side] = static_cast<int>(kind);
 }
 
-int BatchEnv::set_starts(const std::vector<const Battle*>& starts, double share) {
+int BatchEnv::set_starts(const std::vector<const Battle*>& starts, double share,
+                         const std::vector<StartScript>& scripts) {
+    if (!scripts.empty() && scripts.size() != starts.size()) {
+        throw std::invalid_argument("set_starts: one script per start, or none");
+    }
+    for (const StartScript& sc : scripts) {
+        if (sc.side < 0 || sc.side > 1) throw std::invalid_argument("set_starts: a script's side must be 0 or 1");
+        for (const ScriptedPlay& sp : sc.plays) {
+            if (!data_.cards.count(sp.card)) throw std::invalid_argument("set_starts: unknown card in a script: " + sp.card);
+        }
+    }
     // a team's cards: its hand and the queue behind it (a slot waiting to refill has its card in the queue)
     using Cards = std::vector<std::string>;
     auto cards = [](const PlayerState& p) {
@@ -79,7 +89,9 @@ int BatchEnv::set_starts(const std::vector<const Battle*>& starts, double share)
         return all;
     };
     starts_.clear();
-    for (const Battle* b : starts) {
+    scripts_.clear();
+    for (size_t n = 0; n < starts.size(); ++n) {
+        const Battle* b = starts[n];
         if (!b || b->finished()) continue;
         const Cards blue = cards(b->player(Team::Blue)), red = cards(b->player(Team::Red));
         const bool decks = std::any_of(cfg_.matchups.begin(), cfg_.matchups.end(), [&](const Matchup& m) {
@@ -92,9 +104,94 @@ int BatchEnv::set_starts(const std::vector<const Battle*>& starts, double share)
         copy->set_record_damage(false);
         copy->clear_events();
         starts_.push_back(std::move(copy));
+        if (!scripts.empty()) {
+            StartScript sc = scripts[n];
+            std::stable_sort(sc.plays.begin(), sc.plays.end(),
+                             [](const ScriptedPlay& a, const ScriptedPlay& b) { return a.t_ms < b.t_ms; });
+            scripts_.push_back(std::move(sc));
+        }
     }
     start_share_ = share;
     return static_cast<int>(starts_.size());
+}
+
+int64_t BatchEnv::script_made() const {
+    int64_t n = 0;
+    for (const Slot& s : slots_) n += s.script_made;
+    return n;
+}
+
+int64_t BatchEnv::script_dropped() const {
+    int64_t n = 0;
+    for (const Slot& s : slots_) n += s.script_dropped;
+    return n;
+}
+
+bool BatchEnv::scripted(const Slot& s, int side) const {
+    if (s.script < 0) return false;
+    const StartScript& sc = scripts_[s.script];
+    return sc.side == side && s.battle->time_ms() < sc.until_ms;
+}
+
+void BatchEnv::run_script(Slot& s, int i) {
+    if (s.script < 0) return;
+    const StartScript& sc = scripts_[s.script];
+    Battle& b = *s.battle;
+    if (b.time_ms() >= sc.until_ms) {  // over: what was not put down by now is left out
+        s.script_dropped += static_cast<int64_t>(sc.plays.size() - s.script_next);
+        s.script = -1;
+        return;
+    }
+    const Team team = static_cast<Team>(sc.side);
+    while (s.script_next < sc.plays.size() && sc.plays[s.script_next].t_ms <= b.time_ms()) {
+        const ScriptedPlay& sp = sc.plays[s.script_next];
+        const PlayerState& p = b.player(team);
+        int slot = -1;
+        for (int k = 0; k < kHandSize; ++k) {
+            if (p.hand[k] == sp.card) {
+                slot = k;
+                break;
+            }
+        }
+        if (slot >= 0) {
+            const int move = rl::encode_action(b, team, slot, sp.pos);
+            if (b.play(team, slot, sp.pos)) {
+                taken[2 * i + sc.side] = move;
+                ++s.script_made;
+                ++s.script_next;
+                continue;
+            }
+            // Its elixir is there but the spot, as read off the screen, is just off where the card may go (the
+            // river's edge, a tower's foot): the nearest tile it may go to, within 2 tiles.
+            if (p.elixir + 1e-9 >= data_.card(sp.card).elixir) {
+                std::vector<uint8_t> mask(rl::kNumActions);
+                rl::action_mask(b, team, mask.data(), 0);
+                int best = -1;
+                double best_d = 4.0;
+                for (int cell = 0; cell < rl::kCells; ++cell) {
+                    if (!mask[1 + slot * rl::kCells + cell]) continue;
+                    const Vec2 c = rl::cell_position(b, team, cell);
+                    const double d = (c.x - sp.pos.x) * (c.x - sp.pos.x) + (c.y - sp.pos.y) * (c.y - sp.pos.y);
+                    if (d <= best_d) {
+                        best_d = d;
+                        best = cell;
+                    }
+                }
+                if (best >= 0 && b.play(team, slot, rl::cell_position(b, team, best))) {
+                    taken[2 * i + sc.side] = 1 + slot * rl::kCells + best;
+                    ++s.script_made;
+                    ++s.script_next;
+                    continue;
+                }
+            }
+        }
+        if (b.time_ms() - sp.t_ms > kScriptPatienceMs) {  // not to be made in time: left out
+            ++s.script_dropped;
+            ++s.script_next;
+            continue;
+        }
+        break;  // not yet (its elixir, its card on its way back): again next tick
+    }
 }
 
 void BatchEnv::reset() {
@@ -156,9 +253,13 @@ void BatchEnv::reset_slot(int i) {
     s.matchup = static_cast<int>(s.rng() % cfg_.matchups.size());
     const Matchup& m = cfg_.matchups[s.matchup];
     s.start = -1;
+    s.script = -1;
+    s.script_next = 0;
     if (!starts_.empty() && std::uniform_real_distribution<double>(0.0, 1.0)(s.rng) < start_share_) {
         s.start = static_cast<int>(s.rng() % starts_.size());
         s.battle = std::make_unique<Battle>(*starts_[s.start]);
+        // (one with no plays still holds that side: the player really put nothing down then)
+        if (!scripts_.empty() && scripts_[s.start].until_ms > s.battle->time_ms()) s.script = s.start;
     } else {
         s.battle = std::make_unique<Battle>(data_, m.blue, m.red, s.rng());
     }
@@ -254,7 +355,8 @@ void BatchEnv::write_obs(int i) {
         }
         if (slots_[i].live[side].enabled()) obs.live = &slots_[i].live[side];
         rl::encode(b, static_cast<Team>(side), obs, view);
-        if (slots_[i].pending[side].ticks >= 0) {  // a move still on its way: nothing to do but wait
+        // A move still on its way, or the side playing its start's script: nothing to do but wait.
+        if (slots_[i].pending[side].ticks >= 0 || scripted(slots_[i], side)) {
             std::fill_n(view.action_mask, rl::kNumActions, uint8_t{0});
             view.action_mask[rl::kNoop] = 1;
         }
@@ -276,7 +378,7 @@ void BatchEnv::step_slot(int i, const int32_t* actions) {
     // still on its way (delay_ticks) only waits: its mask allowed nothing else, and its bot is not asked.
     for (int side = 0; side < 2; ++side) {
         Slot::Pending& pd = s.pending[side];
-        if (pd.ticks >= 0) continue;
+        if (pd.ticks >= 0 || scripted(s, side)) continue;  // (a scripted side's agent could only wait, its bot rests)
         const int32_t a = actions[2 * i + side];
         if (a == kBotAction) {
             const auto m = s.bots[side]->decide(b, static_cast<Team>(side));
@@ -311,6 +413,7 @@ void BatchEnv::step_slot(int i, const int32_t* actions) {
         for (int side = 0; side < 2; ++side) {
             if (s.pending[side].ticks == 0) land(side);
         }
+        run_script(s, i);
         b.step();
         for (int side = 0; side < 2; ++side) {
             if (s.pending[side].ticks > 0) --s.pending[side].ticks;

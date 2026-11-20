@@ -31,7 +31,8 @@ def attackers(frame, tower, reach):
 
 
 def main():
-    files = sys.argv[1:] or sorted(glob.glob(os.path.join(ROOT, "raw", "perception", "cache", "video*.json")))
+    files = sys.argv[1:] or sorted(p for p in glob.glob(os.path.join(ROOT, "raw", "perception", "cache", "video*.json"))
+                                    if not p.endswith("_clocks.json"))  # (deploy clock caches: another format)
     data = ce.load_data()
     # how close a troop of each kind stands to a tower it hits: its range + its radius + the tower's ~1.5
     reach = {cls: data.card(card).unit.attack.range + data.card(card).unit.radius + 2.0 for cls, card in CARD.items()}

@@ -36,9 +36,12 @@
       }
     },
     "musketeer": {
-      "_why": "deploy_time_ms: see knight.",
+      "_why": "deploy_time_ms: see knight. first_hit_ms 750, not the file's 300: her first shot lands ~0.5 s later in the game than the simulator had it, by two measures over 146 recordings (2026-11-16): at a tower, 1.20 s from stopping to the tower's first HP drop (116 times; simulator 0.60 with 300), and on troops, 1.20 s from coming into reach to the victim's first HP bar for musketeers on the field 2 s or more (1066 meetings, tools/unit_first_hit.py --settled 2; simulator 0.70 the same way, tools' reading lag ~0.1 s). Archers, knights and mini pekkas match both ways (archers only on troops), so only she changes.",
       "unit": {
-        "deploy_time_ms": 800
+        "deploy_time_ms": 800,
+        "attack": {
+          "first_hit_ms": 750
+        }
       }
     }
   },

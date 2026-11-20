@@ -235,6 +235,7 @@ PYBIND11_MODULE(crsim, m) {
         .def("set_hand", &Battle::set_hand, py::arg("team"), py::arg("hand"), py::arg("next"),
              "Digital twin: hand = 4 card ids ('' = empty), next = the next card ('' = unknown)")
         .def("set_elixir", &Battle::set_elixir, py::arg("team"), py::arg("elixir"))
+        .def("forget_blueprints", &Battle::forget_blueprints, py::arg("team"))
         .def("twin_move", &Battle::twin_move, py::arg("id"), py::arg("pos"))
         .def("twin_set_hp", &Battle::twin_set_hp, py::arg("id"), py::arg("hp"))
         .def("twin_remove", &Battle::twin_remove, py::arg("id"))
@@ -384,9 +385,38 @@ PYBIND11_MODULE(crsim, m) {
              "the placements one side of one env may use (0 every tile, 1 key spots, 2 key + tactical spots), "
              "-1 = the config's")
         .def("reset_env", &BatchEnv::reset_env, py::arg("env"))
-        .def("set_starts", &BatchEnv::set_starts, py::arg("starts"), py::arg("share"), py::keep_alive<1, 2>(),
-             "positions (Battles) this share of the episodes starts from instead of a fresh match; returns how "
-             "many were kept (one over, or with other decks, is left out)")
+        .def(
+            "set_starts",
+            [](BatchEnv& env, const std::vector<const Battle*>& starts, double share, py::object scripts) {
+                std::vector<StartScript> sc;
+                if (!scripts.is_none()) {
+                    for (py::handle item : scripts) {
+                        const auto t = item.cast<py::tuple>();
+                        StartScript s;
+                        s.side = t[0].cast<int>();
+                        s.until_ms = t[1].cast<int>();
+                        for (py::handle pl : t[2]) {
+                            const auto q = pl.cast<py::tuple>();
+                            ScriptedPlay sp;
+                            sp.t_ms = q[0].cast<int>();
+                            sp.card = q[1].cast<std::string>();
+                            sp.pos = Vec2{q[2].cast<double>(), q[3].cast<double>()};
+                            s.plays.push_back(std::move(sp));
+                        }
+                        sc.push_back(std::move(s));
+                    }
+                }
+                return env.set_starts(starts, share, sc);
+            },
+            py::arg("starts"), py::arg("share"), py::arg("scripts") = py::none(), py::keep_alive<1, 2>(),
+            "positions (Battles) this share of the episodes starts from instead of a fresh match; returns how "
+            "many were kept (one over, or with other decks, is left out). scripts: None, or one per start: (side, "
+            "until_ms, [(t_ms, card, x, y), ...]) - the cards that side puts down from there, when (battle time) and "
+            "where, whatever its agent decides (it may only wait until until_ms); [] = none")
+        .def_property_readonly("script_made", &BatchEnv::script_made, "scripted plays put down so far")
+        .def_property_readonly("script_dropped", &BatchEnv::script_dropped,
+                               "scripted plays left out so far (not to be made within kScriptPatienceMs, or after "
+                               "the script's end)")
         .def(
             "step",
             [](BatchEnv& env, py::array_t<int32_t, py::array::c_style | py::array::forcecast> actions) {

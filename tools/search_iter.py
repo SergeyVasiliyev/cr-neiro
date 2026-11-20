@@ -22,6 +22,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable
 DECK = "knight,archers,minions,arrows,fireball,giant,mini_pekka,musketeer"
 PANEL = ["runs/v7b/final.pt", "runs/ppo_v6/best.pt", "pusher"]
+PUSH_EVAL = ["--user-starts", "push", "--follow-user", "15"]  # (--push-eval-games: from the user's recorded pushes)
 
 
 def main():
@@ -41,6 +42,15 @@ def main():
     p.add_argument("--games-extra", default="", help="more tools/search_games.py arguments (--explore 2 ...)")
     p.add_argument("--panel", nargs="+", default=PANEL, help="policies (or bots) a candidate must hold up against")
     p.add_argument("--top", default="runs/v7e/top.pt", help="a fixed reference, scored every round")
+    p.add_argument("--push-eval-games", type=int, default=0,
+                   help="also score the candidate (blue) against the best (red) from the user's pushes (evaluate.py "
+                        "--user-starts push --follow-user 15: red puts down his real cards first), this many games, "
+                        "beside the best's own score there (the best as blue: ~14%% for h1 cycle 9). Promoted: "
+                        "--promote from fresh starts and not --push-tol worse there, or --fresh-floor from fresh "
+                        "starts and --push-gain better there; then the panel as ever")
+    p.add_argument("--fresh-floor", type=float, default=0.48)
+    p.add_argument("--push-gain", type=float, default=0.03)
+    p.add_argument("--push-tol", type=float, default=0.02)
     args = p.parse_args()
 
     out_dir = os.path.join(ROOT, "runs", args.name)
@@ -58,12 +68,13 @@ def main():
             f.write(out)
         return out
 
-    def score(model, opponent, games):
+    def score(model, opponent, games, extra=()):
         # as in live play: moves sampled at temperature 0.5 (greedy play hid the distilled nets' gain: ~50% greedy,
         # +5% over the start at 0.5)
         cmd = [PY, "python/evaluate.py", "--model", model, "--opponent", opponent, "--deck", DECK, "--games",
                str(games), "--envs", "100", "--model-temp", "0.5"]
         cmd += ["--decision-ticks", "4"] if opponent in ("heuristic", "pusher") else ["--native-rhythm", "--opp-temp", "0.5"]
+        cmd += list(extra)
         out = run(cmd, "eval")
         m = re.search(r"score ([\d.]+)", out)
         if not m:
@@ -83,6 +94,7 @@ def main():
     rnd = max(done, default=0) + 1
     best_is_top = args.start.replace("\\", "/") == args.top and not done  # no need to play it twice
     best_panel = panel(rel_best)
+    best_push = None  # the best's own score from the user's pushes (as blue against itself), once needed
     log(f">>> start: best = {args.start}; panel " + ", ".join(f"{o} {s:.0%}" for o, s in best_panel.items()))
     while time.time() - started < args.hours * 3600:
         t0 = time.time()
@@ -119,7 +131,18 @@ def main():
         vs_best = score(rel_cand, rel_best, args.eval_games)
         vs_top = vs_best if best_is_top else score(rel_cand, args.top, args.eval_games)
         promoted = False
-        if vs_best >= args.promote:
+        key = vs_best
+        if args.push_eval_games:
+            if best_push is None:
+                best_push = score(rel_best, rel_best, args.push_eval_games, PUSH_EVAL)
+            at_push = score(rel_cand, rel_best, args.push_eval_games, PUSH_EVAL)
+            gain = at_push - best_push
+            ok = ((vs_best >= args.promote and gain >= -args.push_tol)
+                  or (vs_best >= args.fresh_floor and gain >= args.push_gain))
+            log(f">>> round {rnd}: from the user's pushes {at_push:.1%} (the best there {best_push:.1%}, "
+                f"{gain:+.1%}), fresh starts vs best {vs_best:.1%} -> {'to the panel' if ok else 'not good enough'}")
+            key = args.promote if ok else 0.0
+        if key >= args.promote:
             cand_panel = panel(rel_cand)
             avg_c = sum(cand_panel.values()) / len(cand_panel)
             avg_b = sum(best_panel.values()) / len(best_panel)
@@ -129,6 +152,7 @@ def main():
             if promoted:
                 shutil.copy(cand, best)
                 best_panel, best_is_top = cand_panel, False
+                best_push = None  # the new best's own score from the pushes: played next round
         else:
             log(f">>> round {rnd}: vs best {vs_best:.1%}, vs {os.path.basename(os.path.dirname(args.top))} top {vs_top:.1%} -> kept the best "
                 f"({(time.time() - t0) / 60:.0f} min a round)")

@@ -26,6 +26,7 @@ import crsim  # noqa: E402
 import crsim_env as ce  # noqa: E402
 import human_starts  # noqa: E402
 import twin  # noqa: E402
+from clock_cache import load_clocks  # noqa: E402
 from compare_red_truth import match_plays, true_plays  # noqa: E402
 from live.session import LiveMatch  # noqa: E402
 from push_defence_check import CACHE, two_sided_battles  # noqa: E402
@@ -60,21 +61,25 @@ def troops_diff(truth, live, data, reach=2.5):
     return missing, extra
 
 
-def follow_battle(name, data, every=0.5):
+def follow_battle(name, data, every=0.5, clocks=True):
     """Runs the live twin and the truth twin over one battle: (elixir rows [(g, seen, raw, truth)], the user's
-    true plays, the live twin's red plays, its rejected candidates, its log)."""
+    true plays, the live twin's red plays, its rejected candidates, its log). clocks: the live twin sees the deploy
+    clocks (tools/clock_cache.py), as the live bot does."""
     frames, truth = human_starts.follow(name, f"{name}_red", data)
     live = LiveMatch(data)
+    clock_rows = load_clocks(name) if clocks else None
+    if clock_rows is not None and len(clock_rows) != len(frames):
+        clock_rows = None
     rows, logs, last = [], [], -1e9
     b_start, _ = twin.battle_start(frames)
     end = max(fr["t"] - b_start for fr in frames if fr["timer"][0] is not None or fr["timer"][1])
-    for fr in frames:
+    for k, fr in enumerate(frames):
         if fr["t"] - b_start > end:
             break  # the battle is over (the twins would go on on their own)
         args = (fr["t"], twin.seen_from_cache(fr), twin.detections(fr), twin.bars_from_cache(fr))
         truth.update(*args)
         truth.log.clear()
-        live.update(*args)
+        live.update(*args, clocks=clock_rows[k] if clock_rows is not None else None)
         logs += live.log
         live.log.clear()
         g = truth.game_time(fr["t"])
@@ -100,7 +105,11 @@ def follow_battle(name, data, every=0.5):
                     obs_live, obs_truth, miss_e, extra_e))
     plays = true_plays(red_frames, data)
     found = [(g, card, pos) for g, card, pos, _ in live.red_plays]
-    return out, plays, found, list(live.red_rejected), logs
+    # When the twin took each of them (battle s): how late the bot learns of a play
+    accepted = {(g, card, pos): acc for g, card, pos, acc in
+                ((p.g, p.card, p.origin or p.pos, p.accepted_at - live.start) for p in live.plays
+                 if p.side == "red" and p.on and p.source != "truth")}
+    return out, plays, found, list(live.red_rejected), logs, accepted
 
 
 def why_missed(play, found, rejected, logs, dt=2.5, dist=3.0):
@@ -125,20 +134,26 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("names", nargs="*", help="battles (default: every two-sided one cached)")
     p.add_argument("--show", type=int, default=25, help="missed plays listed one by one")
+    p.add_argument("--no-clocks", action="store_true", help="the live twin without the deploy clocks (as before "
+                                                            "2026-11-16)")
     args = p.parse_args()
     data = ce.load_data()
     names = args.names or two_sided_battles()
     rows, tot, miss, phantom, reasons, listed = [], Counter(), Counter(), Counter(), Counter(), []
     phantom_kind = Counter()
+    lags = defaultdict(list)  # troops / spells: s from the true play to the twin taking it
     t0 = time.time()
     for name in names:
         try:
-            r, plays, found, rejected, logs = follow_battle(name, data)
+            r, plays, found, rejected, logs, accepted = follow_battle(name, data, clocks=not args.no_clocks)
         except Exception as e:
             print(f"{name}: skipped ({type(e).__name__}: {e})", flush=True)
             continue
         rows += r
         hits, missed, extra = match_plays(plays, found)
+        for t, card, pos, f in hits:
+            if f in accepted:
+                lags["spells" if card in twin.SPELL_CARDS else "troops"].append(accepted[f] - t)
         for _, c, _ in plays:
             tot[c] += 1
         for pl in missed:
@@ -173,6 +188,10 @@ def main():
               f"<= -2 {np.mean(d <= -2):.0%}, > 4 off {np.mean(abs(d) > 4):.0%}")
     n, m = sum(tot.values()), sum(miss.values())
     print(f"\nthe user's plays {n}: missed {m} ({m / max(1, n):.0%}), phantoms {sum(phantom.values())}")
+    for kind, v in sorted(lags.items()):  # the bot can answer a play only from then on
+        v = np.array(v)
+        print(f"  taken by the twin after the play ({kind}, {len(v)}): median {np.median(v):.2f} s, "
+              f"25% {np.percentile(v, 25):.2f}, 75% {np.percentile(v, 75):.2f}, 90% {np.percentile(v, 90):.2f}")
     for c in sorted(tot, key=lambda c: -miss[c]):
         print(f"  {c:11s} missed {miss[c]:3d}/{tot[c]:3d} ({miss[c] / tot[c]:.0%})  phantoms {phantom[c]:3d}")
     print("why missed:")

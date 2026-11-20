@@ -50,6 +50,7 @@ class Play:
     hit_t: float = None      # spells seen landing: when (video s)
     accepted_at: float = 0.0  # video s
     missing: float = 0.0     # elixir the simulator thought was missing for it
+    clock: tuple = None      # red troops: the spot of the deploy clock it was taken at (surely put down there)
 
 
 @dataclass
@@ -123,6 +124,10 @@ class LiveMatch:
         self.log = []            # (game seconds, text)
         self.frame_times = deque(maxlen=400)  # times of the frames the tracker was given, newest last
         self.second_names = set()  # red track ids taken (so far) for a second box on a unit already there
+        self.clocks = deque()    # (time, [perception.clock.Clock]) of the last few seconds' frames
+        self.clocks_given = False  # the caller looks for deploy clocks (update(..., clocks=...))
+        self.claimed_clocks = []  # (time, tile) of the clocks red plays were taken at (one clock, one play)
+        self.red_taken = 0       # red plays taken from the screen so far (the bot decides at once on a new one)
 
     # --- clock -----------------------------------------------------------------------------------
     @property
@@ -377,9 +382,17 @@ class LiveMatch:
         self.battle.clear_events()  # (the twin reads them every step; nothing else needs them kept)
 
     # --- per frame -------------------------------------------------------------------------------
-    def update(self, t, seen, detections, bars=None):
+    def update(self, t, seen, detections, bars=None, clocks=None):
         """seen: ScreenReader.read(frame); detections: UnitDetector.detect(frame) (or []);
-        bars: UnitHpReader.bars(frame) - HP bars over damaged troops (None: not read)."""
+        bars: UnitHpReader.bars(frame) - HP bars over damaged troops (None: not read);
+        clocks: perception.clock.find_clocks(frame, near=self.clock_spots(detections)) - deploy clocks (None: not
+        looked for; then new red troops count only once seen for a while)."""
+        if clocks is not None:
+            self.clocks_given = True
+            self.clocks.append((t, clocks))
+            while self.clocks and t - self.clocks[0][0] > self.CLOCK_KEEP:
+                self.clocks.popleft()
+            self.claimed_clocks = [c for c in self.claimed_clocks if t - c[0] < self.CLOCK_LIFE + self.CLOCK_KEEP]
         if "timer" in seen:
             self._clock(t, (seen["timer"]["seconds"], seen["timer"]["overtime"]))
         g = self.game_time(t)
@@ -889,18 +902,30 @@ class LiveMatch:
             self.log.append((g, f"blue {card} (by hand) at ({pos[0]:.1f}, {pos[1]:.1f})"))
 
     def _enemy_plays(self, t, g):
-        fresh = [tr for tr in self.tracker.tracks if tr.confirmed and tr.id not in self.handled and tr.landed(t)
-                 and t - tr.first_seen < 1.8 and tr.id not in self.own_units
-                 and (tr.team == "red" or (tr.team == "any" and tr.cls.endswith("_hit")))]
+        base = [tr for tr in self.tracker.tracks if tr.confirmed and tr.id not in self.handled
+                and t - tr.first_seen < 1.8 and tr.id not in self.own_units
+                and (tr.team == "red" or (tr.team == "any" and tr.cls.endswith("_hit")))]
+        # A new troop with its deploy clock under it was surely just put down, there: it counts at once (the
+        # clock's spot is where; ~0.5 s sooner than the rule below, the bot can answer that much earlier).
+        clocked = {}
+        if self.clocks_given:
+            for tr in sorted(base, key=lambda tr: (-tr.hits, -tr.conf)):
+                if tr.cls not in twin.CARD_OF_UNIT or self._kind_unsure(tr, base):
+                    continue
+                c = self._clock_under(tr, [o for o in clocked.values()])
+                if c is not None:
+                    clocked[tr.id] = c
         # A troop is judged once it has been seen a few times (a kind the detector is unsure about flickers);
         # spell hits right away.
-        fresh = [tr for tr in fresh if tr.cls.endswith("_hit") or
+        fresh = [tr for tr in base if tr.id in clocked or tr.landed(t) and (tr.cls.endswith("_hit") or
                  (tr.hits >= self.NEW_PLAY_HITS and t - tr.first_seen >= self.NEW_PLAY_AGE
-                  and (not self._behind_king(*tr.landing_pos()) or t - tr.first_seen >= self.WALK_OUT_AGE))]
+                  and (not self._behind_king(*tr.landing_pos()) or t - tr.first_seen >= self.WALK_OUT_AGE)))]
+        fresh.sort(key=lambda tr: tr.id not in clocked)  # (stable: otherwise as before)
         for tr in fresh:
             if tr.id in self.handled:
                 continue
-            if not tr.cls.endswith("_hit"):
+            clock = clocked.get(tr.id)
+            if not tr.cls.endswith("_hit") and clock is None:
                 other = self._second_name(tr)
                 if other is not None:  # not judged yet: if it is a unit of its own, it will show it
                     if tr.id not in self.second_names:
@@ -909,8 +934,9 @@ class LiveMatch:
                                             f"{other.team} {other.cls} there (a second box on it?)"))
                     continue
             self.handled.add(tr.id)
-            x, y = tr.landing_pos()
-            seen_g = g - (t - tr.first_seen)  # battle time it was first seen
+            x, y = tr.landing_pos() if clock is None else clock[1]
+            # battle time it was first seen (with its clock: when the clock showed up, if earlier)
+            seen_g = g - (t - (tr.first_seen if clock is None else min(tr.first_seen, clock[0])))
             if tr.cls.endswith("_hit"):
                 spell = tr.cls[:-4]
                 if self._own_spell_hit((x, y), seen_g):
@@ -930,10 +956,12 @@ class LiveMatch:
                 # A tower's own figure taken for a troop stays put; a troop placed behind the king's tower
                 # walks out from behind it (first seen on it, moving).
                 still = math.dist(tr.history[0][1:], tr.history[-1][1:]) < 0.4
-                if self._on_princess_tower(x, y, tr.cls) and tr.conf < self.ON_TOWER_CONF and still:
+                if clock is None and self._on_princess_tower(x, y, tr.cls) and tr.conf < self.ON_TOWER_CONF and still:
                     self.log.append((g, f"red {card}? no: on a tower, unsure"))
                     continue
                 rival = self._rival_kind(tr)
+                if rival is not None and clock is not None and rival.first_seen < clock[0] - 0.5:
+                    rival = None  # a unit there before this one was put down: another unit, not another name
                 if rival is not None:
                     recent = [p.card for p in self.accepted_red[-self.CYCLE_GAP:]]
                     counted = any(rival.id in p.units for p in self.accepted_red[-4:])  # (this unit, played as that)
@@ -972,17 +1000,25 @@ class LiveMatch:
                     self.log.append((g, f"red {card}: split behind the king's tower, put in the middle "
                                         f"({pos[0]:.1f}, {pos[1]:.1f})"))
                     continue
-                if not self._dropped_in(tr) and self._lost_unit(tr.cls, "red", x, y, self.RETURN_WINDOW) is not None:
+                if (clock is None and not self._dropped_in(tr)
+                        and self._lost_unit(tr.cls, "red", x, y, self.RETURN_WINDOW) is not None):
                     self.log.append((g, f"red {card}? no: a unit of theirs seen again (the simulator had lost it)"))
                     continue
                 count = GROUP.get(card, 1)
-                group = [tr] + [o for o in fresh if o is not tr and o.id not in self.handled and o.cls == tr.cls
-                                and abs(o.first_seen - tr.first_seen) < 0.6
-                                and math.dist(o.landing_pos(), (x, y)) < 3.0][:count - 1]
+                if clock is None:
+                    group = [tr] + [o for o in fresh if o is not tr and o.id not in self.handled and o.cls == tr.cls
+                                    and abs(o.first_seen - tr.first_seen) < 0.6
+                                    and math.dist(o.landing_pos(), (x, y)) < 3.0][:count - 1]
+                    pos = (sum(o.landing_pos()[0] for o in group) / len(group),
+                           sum(o.landing_pos()[1] for o in group) / len(group))
+                else:  # the group around one clock; the clock is where it was put down
+                    group = [tr] + [o for o in base if o is not tr and o.id not in self.handled and o.cls == tr.cls
+                                    and abs(o.first_seen - tr.first_seen) < 0.6
+                                    and math.dist((o.x, o.y), (x, y)) < 3.0][:count - 1]
+                    pos = (x, y)
                 self.handled.update(o.id for o in group)
-                pos = (sum(o.landing_pos()[0] for o in group) / len(group), sum(o.landing_pos()[1] for o in group) / len(group))
                 cand = twin.Play("red", card, seen_g - self.deploy_delay, pos, "units", [o.id for o in group])
-                if self._walking_out(tr):
+                if clock is None and self._walking_out(tr):
                     # Put behind their king's tower (where a push starts), it was hidden until it walked out:
                     # played its blueprint second, its deploy timer and the walk before it was first seen.
                     unit = self.data.card(card).unit
@@ -1008,11 +1044,69 @@ class LiveMatch:
                 continue
             # In the journal at the moment it was played: the simulator goes back and plays it from there.
             self.add_play("red", cand.card, cand.t, cand.pos, "seen", min(1.0, tr.conf), cand.units,
-                          origin=getattr(cand, "origin", None), hit_t=getattr(cand, "hit_t", None), accepted_at=t)
-            self.log.append((g, f"red {cand.card} at ({cand.pos[0]:.1f}, {cand.pos[1]:.1f})"))
+                          origin=getattr(cand, "origin", None), hit_t=getattr(cand, "hit_t", None), accepted_at=t,
+                          clock=None if clock is None else clock[1])
+            self.red_taken += 1
+            if clock is not None:
+                self.claimed_clocks.append((t, clock[1]))
+            self.log.append((g, f"red {cand.card} at ({cand.pos[0]:.1f}, {cand.pos[1]:.1f})"
+                                + (" (its deploy clock)" if clock is not None else "")))
 
     NEW_PLAY_HITS = 4      # sightings before a new red troop counts as a play
     NEW_PLAY_AGE = 0.5     # s
+    # Deploy clocks (perception/clock.py): a new red troop with one under it counts at once.
+    CLOCK_KEEP = 3.0       # s of clock sightings kept
+    CLOCK_REACH = (1.3, 2.8, 0.8)  # tiles: the clock lies within x +-1.3 of the troop, up to 2.8 below where it is
+                                   # first seen (it drops in from above: a giant 2.3) and 0.8 above (minions)
+    CLOCK_EARLY = 0.35     # s: the clock may show a frame or two before the troop is first seen
+    CLOCK_SAME = 1.0       # tiles: sightings this close are one clock
+    CLOCK_SEEN = 2         # sightings at least (a gold ring the arena happens to show once is no clock)
+    CLOCK_LIFE = 2.5       # s: a clock a play was taken at is that play's until then (one clock, one play)
+    UNSURE_REACH = 1.0     # tiles: another new red troop of another kind this close = the detector unsure what it is
+
+    def clock_spots(self, detections):
+        """Where to look for deploy clocks in this frame (perception.clock.find_clocks near=): red troops that are not
+        one seen there for a while already (new ones)."""
+        old = [(tr.x, tr.y) for tr in self.tracker.tracks if tr.team == "red" and tr.last_seen - tr.first_seen > 1.8]
+        return [d.tile for d in detections if d.team == "red" and d.cls in twin.CARD_OF_UNIT
+                and not any(abs(d.tile[0] - x) + abs(d.tile[1] - y) < 0.8 for x, y in old)]
+
+    def _kind_unsure(self, tr, base):
+        """Another new red troop of another kind on the spot: one unit the detector names two ways, maybe."""
+        return any(o is not tr and o.team == "red" and o.cls != tr.cls and o.cls in twin.CARD_OF_UNIT
+                   and abs(o.first_seen - tr.first_seen) < 1.0 and math.dist((o.x, o.y), (tr.x, tr.y)) < self.UNSURE_REACH
+                   for o in self.tracker.tracks)
+
+    def _clock_under(self, tr, taken=()):
+        """(time first seen, spot) of a deploy clock under a new red troop - seen at least CLOCK_SEEN times since
+        just before the troop, never blue (ours), no play taken at it yet - or None."""
+        spots = []  # [first time, spot, sightings, any blue]
+        points = ((tr.history[0][1], tr.history[0][2]), (tr.x, tr.y))
+        rx, below, above = self.CLOCK_REACH
+        for tc, clocks in self.clocks:
+            if tc < tr.first_seen - self.CLOCK_EARLY:
+                continue
+            for c in clocks:
+                cx, cy = c.tile
+                if not any(abs(cx - x) <= rx and -below <= cy - y <= above for x, y in points):
+                    continue
+                for s in spots:
+                    if math.dist(s[1], c.tile) < self.CLOCK_SAME:
+                        s[2] += 1
+                        s[3] = s[3] or c.side == "blue"
+                        break
+                else:
+                    spots.append([tc, tuple(c.tile), 1, c.side == "blue"])
+        for first, spot, n, blue in sorted(spots, key=lambda s: -s[2]):
+            if n < self.CLOCK_SEEN or blue:
+                continue
+            if any(math.dist(spot, s) < self.CLOCK_SAME for _, s in taken):
+                continue  # another new troop of this frame has it
+            if any(math.dist(spot, s) < self.CLOCK_SAME and first - tk < self.CLOCK_LIFE
+                   for tk, s in self.claimed_clocks):
+                continue
+            return first, spot
+        return None
     PHANTOM_HITS = 8       # a play whose units were seen fewer times than this, and are gone, was a mistake ...
     PHANTOM_WINDOW = 10.0  # ... if it was this recent (s): an older one was real and died - checked against
                            # both-side recordings (3 of 4 undos were of real plays 14-29 s old, the right one 8 s)
@@ -1096,8 +1190,8 @@ class LiveMatch:
         if not same or cand.source != "units":
             return False
         old = same[-1]
-        if t - old.accepted_at > self.PHANTOM_WINDOW:
-            return False
+        if t - old.accepted_at > self.PHANTOM_WINDOW or old.clock is not None:
+            return False  # (taken at its deploy clock: it surely was put down; the new one is the doubtful one)
         tracks = {tr.id: tr for tr in self.tracker.tracks}
         live = [tracks[u] for u in old.units if u in tracks]
         seen = sum(tr.hits for tr in live)

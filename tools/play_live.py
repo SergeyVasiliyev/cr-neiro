@@ -11,6 +11,7 @@ Q = quit. Without --act nothing is touched.
 import argparse
 import os
 import sys
+import threading
 import time
 import traceback
 
@@ -26,6 +27,7 @@ from live.finisher import finishing_spell  # noqa: E402
 from live.window import WindowScreen  # noqa: E402
 from live.session import BLUE, LiveMatch  # noqa: E402
 import twin  # noqa: E402
+from perception.clock import find_clocks  # noqa: E402
 from perception.layout import Layout  # noqa: E402
 from perception.reader import ScreenReader  # noqa: E402
 
@@ -105,50 +107,128 @@ def label(img, text, x, y, color, size=0.9):
     cv2.putText(img, text, (int(x), int(y)), FONT, size, color, 2, cv2.LINE_AA)
 
 
-def draw(frame, match, detections, status, last_move, events):
-    """Left: the screen with what the detector sees (thin boxes, name on top) and where the simulator
-    has its units (rings with name and HP bar). Right: status and the latest events."""
-    img = frame.copy()
-    L = Layout.for_frame(img)
+PREVIEW_H = 900  # px: the preview window's height
+
+
+def draw(frame, match, detections, status, last_move, events, clocks=()):
+    """Left: the screen with what the detector sees (thin boxes, name on top), the deploy clocks found (circles)
+    and where the simulator has its units (rings with name and HP bar). Right: status and the latest events.
+    Drawn at the preview's own size (drawing on the full frame and shrinking it cost ~20 ms a time)."""
+    k = PREVIEW_H / frame.shape[0]
+    img = cv2.resize(frame, (int(round(frame.shape[1] * k)), PREVIEW_H), interpolation=cv2.INTER_LINEAR)
+    L = Layout.for_frame(frame)
+
+    def px(x, y):
+        return int(x * k), int(y * k)
+
+    def lab(text, x, y, color, size):
+        cv2.putText(img, text, (int(x), int(y)), FONT, size * k, (0, 0, 0), max(1, round(6 * k)), cv2.LINE_AA)
+        cv2.putText(img, text, (int(x), int(y)), FONT, size * k, color, max(1, round(2 * k)), cv2.LINE_AA)
+
     for d in detections:
-        x0, y0, x1, y1 = map(int, d.box)
-        cv2.rectangle(img, (x0, y0), (x1, y1), COLORS.get(d.team, COLORS["any"]), 2)
-        label(img, NAMES.get(d.cls, d.cls), x0, y0 - 6, COLORS.get(d.team, COLORS["any"]), 0.75)
+        x0, y0 = px(d.box[0], d.box[1])
+        x1, y1 = px(d.box[2], d.box[3])
+        cv2.rectangle(img, (x0, y0), (x1, y1), COLORS.get(d.team, COLORS["any"]), 1)
+        lab(NAMES.get(d.cls, d.cls), x0, y0 - 3, COLORS.get(d.team, COLORS["any"]), 0.75)
+    for c in clocks:
+        cv2.circle(img, px(*c.px), max(2, int(31 * k)), (0, 215, 255), 2)
     if match.battle is not None:
         for e in match.battle.entities:
             if e.is_building:
                 continue
-            x, y = (int(v) for v in L.tile_to_px(e.pos.x, e.pos.y))
+            x, y = px(*L.tile_to_px(e.pos.x, e.pos.y))
             color = COLORS["blue" if e.team == BLUE else "red"]
-            r = L.s(26)
-            cv2.circle(img, (x, y), r, (255, 255, 255), 6)
-            cv2.circle(img, (x, y), r, color, 3 if e.deploy_ms_left <= 0 else 1)
+            r = max(3, int(L.s(26) * k))
+            cv2.circle(img, (x, y), r, (255, 255, 255), 3)
+            cv2.circle(img, (x, y), r, color, 2 if e.deploy_ms_left <= 0 else 1)
             frac = max(0.0, e.hp / max(1, e.max_hp))
-            cv2.rectangle(img, (x - r, y + r + 4), (x + r, y + r + 12), (40, 40, 40), -1)
-            cv2.rectangle(img, (x - r, y + r + 4), (x - r + int(2 * r * frac), y + r + 12), color, -1)
-            label(img, "sim " + NAMES.get(e.def_id, e.def_id), x - r, y + r + 40, color, 0.75)
+            cv2.rectangle(img, (x - r, y + r + 2), (x + r, y + r + 6), (40, 40, 40), -1)
+            cv2.rectangle(img, (x - r, y + r + 2), (x - r + int(2 * r * frac), y + r + 6), color, -1)
+            lab("sim " + NAMES.get(e.def_id, e.def_id), x - r, y + r + 19, color, 0.75)
         for p in match.battle.projectiles:
             if p.is_spell and p.delay_ms <= 0:
-                x, y = (int(v) for v in L.tile_to_px(p.pos.x, p.pos.y))
-                cv2.drawMarker(img, (x, y), COLORS["blue" if p.team == BLUE else "red"], cv2.MARKER_STAR, L.s(50), 4)
+                cv2.drawMarker(img, px(*L.tile_to_px(p.pos.x, p.pos.y)), COLORS["blue" if p.team == BLUE else "red"],
+                               cv2.MARKER_STAR, int(L.s(50) * k), 2)
     if last_move is not None:
-        x, y = (int(v) for v in L.tile_to_px(*last_move[1]))
-        cv2.drawMarker(img, (x, y), (0, 255, 255), cv2.MARKER_CROSS, L.s(60), 5)
-        label(img, "bot: " + last_move[0], x + 20, y - 20, (0, 255, 255))
+        x, y = px(*L.tile_to_px(*last_move[1]))
+        cv2.drawMarker(img, (x, y), (0, 255, 255), cv2.MARKER_CROSS, int(L.s(60) * k), 3)
+        lab("bot: " + last_move[0], x + 10, y - 10, (0, 255, 255), 0.9)
 
-    panel = np.full((img.shape[0], PANEL_W, 3), 32, np.uint8)
-    lines = status + ["", "box  = seen by the detector", "ring = unit in the simulator", "+    = bot's last move", "",
-                      "latest:"] + events[-24:]
-    for k, line in enumerate(lines):
+    panel = np.full((PREVIEW_H, int(PANEL_W * k), 3), 32, np.uint8)
+    lines = status + ["", "box  = seen by the detector", "ring = unit in the simulator", "+    = bot's last move",
+                      "gold circle = a deploy clock", "", "latest:"] + events[-24:]
+    for n, line in enumerate(lines):
         color = (255, 255, 255)
         if " red " in f" {line} ":
             color = COLORS["red"]
         elif " blue " in f" {line} " or "bot" in line:
             color = (255, 190, 120)
-        cv2.putText(panel, line, (16, 50 + 44 * k), FONT, 0.8, color, 2, cv2.LINE_AA)
-    out = np.hstack([img, panel])
-    h = 900
-    return cv2.resize(out, (int(out.shape[1] * h / out.shape[0]), h), interpolation=cv2.INTER_AREA)
+        cv2.putText(panel, line, (int(16 * k), int((50 + 44 * n) * k)), FONT, 0.8 * k, color, 1, cv2.LINE_AA)
+    return np.hstack([img, panel])
+
+
+class FramePrefetch:
+    """Takes the next screenshot in a background thread while the bot works on this one (capture ~35 ms of a
+    ~90 ms loop before): one frame ahead at most, so it never captures more often than the loop takes frames.
+    screenshot() hands over the frame (frame_t: when it was taken); a capture error is raised there, as the
+    screen itself would."""
+
+    def __init__(self, screen):
+        self.screen = screen
+        self.cond = threading.Condition()
+        self.ready, self.stop = False, False
+        self.frame = self.error = None
+        self.frame_t = self._t = None
+        self.thread = threading.Thread(target=self._run, daemon=True, name="capture")
+        self.thread.start()
+
+    def _run(self):
+        while True:
+            with self.cond:
+                while self.ready and not self.stop:
+                    self.cond.wait(0.5)
+                if self.stop:
+                    return
+            t0 = time.monotonic()
+            try:
+                frame, error = self.screen.screenshot(), None
+            except BaseException as err:  # noqa: BLE001 - handed to the loop, which knows what to do
+                frame, error = None, err
+            t = (t0 + time.monotonic()) / 2  # (the moment the picture shows, about)
+            with self.cond:
+                self.frame, self.error, self._t, self.ready = frame, error, t, True
+                self.cond.notify_all()
+            if error is not None:
+                time.sleep(0.05)
+
+    STALE = 0.12  # s: a frame that waited longer (the loop was busy: a lookahead search, a tap) is dropped
+
+    def screenshot(self):
+        fresh_only = False
+        with self.cond:
+            while True:
+                while not self.ready:
+                    if not self.thread.is_alive():
+                        raise RuntimeError("the capture thread stopped")
+                    self.cond.wait(0.5)
+                if self.error is None and not fresh_only and time.monotonic() - self._t > self.STALE:
+                    self.ready, fresh_only = False, True  # taken before the loop's last long step: take a new one
+                    self.cond.notify_all()
+                    continue
+                break
+            frame, error, self.frame_t = self.frame, self.error, self._t
+            self.ready = False
+            self.cond.notify_all()
+        if error is not None:
+            raise error
+        return frame
+
+    def close(self):
+        with self.cond:
+            self.stop = True
+            self.cond.notify_all()
+        self.thread.join(timeout=2.0)
+        self.screen.close()
 
 
 class VideoScreen:
@@ -244,9 +324,14 @@ def main():
                    help="a policy samples its moves at this temperature (0 = always its most likely move). 0.5 beat "
                         "greedy in the simulator (v7e top vs v7e best 60%% vs 52%%, vs v7b 84%% vs 79%%) and is less "
                         "predictable for a human")
+    p.add_argument("--search-ab", action="store_true",
+                   help="lookahead in every other battle (the 1st, 3rd, ... with it, the 2nd, 4th, ... without), each "
+                        "battle's choice in the log (\"battle N: with lookahead\"): does it help against a human?")
     p.add_argument("--search", action="store_true",
                    help="lookahead before a move (python/search.py): the policy's best few moves played forward in "
-                        "copies of the twin; ~0.12 s a search. In the simulator it beat the plain policy 87%%")
+                        "copies of the twin; ~0.12 s a search (up to 0.2), about every third decision. In the simulator, "
+                        "seeing only what the twin can (search_eval.py --fair), cycle 9 with it beat cycle 9 68%%, "
+                        "cycle 8 85%% (47%% without), cycle 6 70%% (60%% without)")
     p.add_argument("--finisher", action="store_true",
                    help="hard rule: cast a spell in hand that surely destroys an enemy tower (python/live/finisher.py)")
     p.add_argument("--no-detector", action="store_true", help="no unit detection (the opponent stays invisible)")
@@ -260,6 +345,14 @@ def main():
     p.add_argument("--video", default=None, help="use a recording instead of the emulator (for testing)")
     p.add_argument("--video-start", type=float, default=0.0)
     p.add_argument("--no-window", action="store_true")
+    p.add_argument("--sync-capture", action="store_true",
+                   help="take each screenshot when the frame before is done (default: the next one is taken in the "
+                        "background meanwhile)")
+    p.add_argument("--no-clocks", action="store_true",
+                   help="don't look for deploy clocks (a new red troop then counts as played only after ~0.5 s)")
+    p.add_argument("--no-quick-answer", action="store_true",
+                   help="decide only on the policy's rhythm (default: also at once when the twin takes a new red play)")
+    p.add_argument("--profile", action="store_true", help="time each step of the loop (printed with the status)")
     args = p.parse_args()
     if not args.check:
         os.makedirs(os.path.join(ROOT, "raw", "live_logs"), exist_ok=True)
@@ -277,6 +370,8 @@ def main():
     if args.check:
         check(device, screen, reader)
         return
+    if not args.sync_capture and (screen is not device or args.video):  # (not for slow ADB screenshots)
+        screen = FramePrefetch(screen)
 
     detector = None
     if not args.no_detector:
@@ -291,8 +386,10 @@ def main():
         brain.finisher = True
     if isinstance(brain, PolicyBrain) and args.temperature > 0:
         brain.player.temperature = args.temperature
-    if isinstance(brain, PolicyBrain) and args.search:
+    if isinstance(brain, PolicyBrain) and (args.search or args.search_ab):
         brain.use_search(args.temperature if args.temperature > 0 else 0.5)
+    searcher = brain.search if isinstance(brain, PolicyBrain) else None
+    battle_start, battle_no = None, 0  # --search-ab: the battle's start (wall s) and number
     if args.decide_every is None:
         args.decide_every = getattr(brain, "decide_every", 0.3)
     playing = args.act
@@ -304,36 +401,76 @@ def main():
     errors = 0
     last_refusal = None
     loop_no = 0
-    print(f"brain: {args.brain}{' + lookahead' if args.search else ''}, {'PLAYING' if playing else 'watching only (no --act)'}; P = pause, Q = quit")
+    print(f"brain: {args.brain}{' + lookahead' if args.search else ' + lookahead every other battle' if args.search_ab else ''}, "
+          f"{'PLAYING' if playing else 'watching only (no --act)'}; P = pause, Q = quit")
+    red_taken = 0  # the twin's count of red plays taken: a new one = decide at once (--no-quick-answer: not)
+    # No decision on a frame taken sooner than decide_every after our last tap: until then the screen (and the
+    # twin) may still show the card in hand and the elixir unspent - the same card was tapped twice (2026-11-16).
+    own_ready = 0.0
+    clocks = []
+    spent = {}  # --profile: step -> [seconds, times]
+
+    def lap(step, since):
+        now = time.monotonic()
+        if args.profile:
+            s = spent.setdefault(step, [0.0, 0])
+            s[0] += now - since
+            s[1] += 1
+        return now
+
     try:
         while True:
+            t_cap = time.monotonic()
             try:
                 frame = screen.screenshot()
+                t = getattr(screen, "frame_t", None) or time.monotonic()  # when the picture was taken
                 warned = False
             except RuntimeError as err:  # LDPlayer minimised: slow ADB screenshots until it is back
                 if not warned:
                     print(f"{err}; using ADB screenshots (slow) until the window is back")
                     warned = True
                 frame = device.screenshot()
-            try:
-                frame = full_size(frame)
                 t = time.monotonic()
+            try:
+                t_step = lap("capture (waiting)", t_cap)
+                frame = full_size(frame)
                 try:
                     seen = reader.read(frame)
                 except ValueError:
                     continue
+                t_step = lap("screen read", t_step)
                 detections = detector.detect(frame) if detector else []
-                match.update(t, seen, detections, hp_reader.bars(frame, detections) if detector else None)
+                t_step = lap("detector", t_step)
+                bars = hp_reader.bars(frame, detections) if detector else None
+                clocks = (find_clocks(frame, near=match.clock_spots(detections))
+                          if detector and not args.no_clocks else None)
+                t_step = lap("bars + clocks", t_step)
+                match.update(t, seen, detections, bars, clocks)
+                clocks = clocks or []
+                t_step = lap("twin", t_step)
+                if match.red_taken != red_taken:  # a new red play: answer it now, not at the next beat
+                    red_taken = match.red_taken
+                    if not args.no_quick_answer:
+                        next_decision = min(next_decision, t)
                 frames += 1
                 if t - fps_t0 > 2.0:
                     fps, frames, fps_t0 = frames / (t - fps_t0), 0, t
 
                 g = match.game_time(t)
+                if args.search_ab and searcher is not None and match.start is not None and (
+                        battle_start is None or abs(match.start - battle_start) > 30.0):
+                    battle_start, battle_no = match.start, battle_no + 1  # a new battle
+                    brain.search = searcher if battle_no % 2 == 1 else None
+                    print(f"battle {battle_no}: {'with' if brain.search is not None else 'without'} lookahead")
                 battle = match.battle
-                if battle is not None and brain is not None and t >= next_decision and g is not None and g >= 0:
+                if (battle is not None and brain is not None and t >= next_decision and t >= own_ready
+                        and g is not None and g >= 0):
                     next_decision = t + args.decide_every
+                    t_step = time.monotonic()
                     move = (brain(battle, enemy_elixir=match.enemy_elixir_seen(t)) if isinstance(brain, PolicyBrain)
                             else brain(battle))
+                    t_step = lap("brain" + (" (lookahead)" if getattr(brain, "search", None) is not None else ""),
+                                 t_step)
                     if move is not None:
                         slot, pos = move
                         card = battle.player(BLUE).hand[slot]
@@ -352,7 +489,9 @@ def main():
                             last_move = (card, pos)
                             if playing:
                                 device.play_card(slot, pos, args.method)
-                                match.own_play(t, card, pos)
+                                tapped = time.monotonic()
+                                match.own_play(tapped, card, pos)  # (now, not when the frame was taken)
+                                own_ready = tapped + args.decide_every
                             text = f"{'bot plays' if playing else 'bot would play'} {card} at ({pos[0]:.1f}, {pos[1]:.1f})"
                             print(f"{g:6.1f}s  {text}")
                             if playing or not events or not events[-1].endswith(text):
@@ -370,6 +509,10 @@ def main():
                     print(f"[{fps:4.1f} fps] {when}  elixir {seen['elixir']:.1f}  hand {hand}  units in sim {units}")
                     if battle is not None:  # to check the simulator copy against the game afterwards
                         print(f"          sim: {sim_view(match, battle, seen)}")
+                    if args.profile and spent:
+                        print("          ms: " + "  ".join(f"{k} {1000 * s / max(1, n):.1f}"
+                                                         for k, (s, n) in spent.items()))
+                        spent.clear()
 
             except Exception:  # one bad frame must not stop the bot in the middle of a battle
                 errors += 1
@@ -384,11 +527,13 @@ def main():
                 status = [f"{fps:.1f} fps  game {g:.1f}s" if g is not None else f"{fps:.1f} fps  waiting for a battle",
                           f"elixir {seen['elixir']:.1f}  " + ("PLAYING" if playing else "watching") +
                           f"  brain {args.brain}"]
+                t_step = time.monotonic()
                 try:  # the preview is only for us to watch: a drawing error must not stop the bot
-                    cv2.imshow("cr-neiro live", draw(frame, match, detections, status, last_move, events))
+                    cv2.imshow("cr-neiro live", draw(frame, match, detections, status, last_move, events, clocks))
                 except Exception:
                     print(f"preview error, skipped:\n{traceback.format_exc()}")
                 key = cv2.waitKey(1) & 0xFF
+                lap("preview", t_step)
                 if key == ord("q"):
                     break
                 # The window's close button: it would only come back with the next frame - take it as quit.

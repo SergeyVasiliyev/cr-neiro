@@ -50,6 +50,25 @@ struct Matchup {
     Deck red;
 };
 
+// What one side of a start position does next, whatever its agent or bot decides (BatchEnv::set_starts): the
+// cards a player really put down after that moment of a recorded battle, when and where. Until until_ms that
+// side's agent may only wait (its mask allows nothing else) and its bot is not asked; then it plays on its own.
+// Against a net's follow-up the bot never had to defend the user's pushes at once (2026-11-14,
+// tools/push_follow_check.py: against his real follow-up defending at once was better by +0.10).
+struct ScriptedPlay {
+    int t_ms = 0;      // battle time it is put down
+    std::string card;
+    Vec2 pos;          // arena tiles
+};
+struct StartScript {
+    int side = 1;      // 0 blue, 1 red
+    int until_ms = 0;  // battle time its agent takes over
+    std::vector<ScriptedPlay> plays;  // in time order
+};
+// A scripted card that can't be put down when due (its elixir not there yet, the card not back in hand, the spot
+// not open) is tried again every tick for this long, then left out.
+constexpr int kScriptPatienceMs = 3000;
+
 struct BatchEnvConfig {
     int num_envs = 1;
     int num_threads = 0;      // 0 = OpenMP default (all cores)
@@ -116,7 +135,12 @@ public:
     // (a push built behind the king, a low tower, an elixir lead). Taken as they are but for the twin's
     // bookkeeping (it never finishes on its own, logs events): off. One that is over, or whose cards are not
     // a matchup's decks, is left out; returns how many were kept. The battles' GameData must outlive the env.
-    int set_starts(const std::vector<const Battle*>& starts, double share);
+    // scripts: empty, or one per start (one with no plays: none) - what a side does next from there (StartScript).
+    int set_starts(const std::vector<const Battle*>& starts, double share,
+                   const std::vector<StartScript>& scripts = {});
+    // Scripted plays made / left out (not to be made in time) since the env was built (set_starts' scripts).
+    int64_t script_made() const;
+    int64_t script_dropped() const;
 
     int num_envs() const { return cfg_.num_envs; }
     const BatchEnvConfig& config() const { return cfg_; }
@@ -171,6 +195,9 @@ private:
         Pending pending[2];
         int matchup = 0;
         int start = -1;  // set_starts: the position this episode began at, -1 = a fresh match
+        int script = -1;  // ... and its script (scripts_), -1 = none
+        size_t script_next = 0;  // the script's next play
+        int64_t script_made = 0, script_dropped = 0;  // (counts over all its episodes)
         int steps = 0;
         int tower_hp[2] = {0, 0};
         int crowns[2] = {0, 0};
@@ -192,7 +219,13 @@ private:
     GameData data_;
     BatchEnvConfig cfg_;
     std::vector<Slot> slots_;
+    // Is this side of the slot playing its start's script right now (its agent only waits)?
+    bool scripted(const Slot& s, int side) const;
+    // Puts down the script's cards that are due (one tick).
+    void run_script(Slot& s, int i);
+
     std::vector<std::unique_ptr<Battle>> starts_;  // set_starts
+    std::vector<StartScript> scripts_;             // ... one per start, or empty
     double start_share_ = 0.0;
     double full_tower_hp_ = 1.0;
 };

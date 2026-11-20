@@ -45,10 +45,12 @@ def follow(name, red_name, data):
     return frames, LiveMatch(data, red_truth=true_plays(red_frames, data), blue_truth=own)
 
 
-def recording_starts(name, red_name, data, every=1.5, skip_first=6.0, skip_last=3.0, min_battle=20.0):
+def recording_starts(name, red_name, data, every=1.5, skip_first=6.0, skip_last=3.0, min_battle=20.0, follow_s=0.0):
     """[(battle no, game s, Battle)] of one recording: a copy of the twin's battle every `every` s of game time,
     from skip_first s on (the twin syncs to the screen first) to skip_last s before the recording of that battle
-    ends (its last frames are the least sure); battles shorter than min_battle s (clips) are left out."""
+    ends (its last frames are the least sure); battles shorter than min_battle s (clips) are left out.
+    follow_s > 0 (with red_name): each also gets a 4th item, the script of red's real next plays for that long,
+    as BatchEnv.set_starts takes it (see red_script)."""
     frames, m = follow(name, red_name, data)
     out, cur = [], []
     no, last_g, next_g = 0, None, skip_first
@@ -69,10 +71,23 @@ def recording_starts(name, red_name, data, every=1.5, skip_first=6.0, skip_last=
             cur, no, next_g = [], no + 1, skip_first
         last_g = g
         if g >= next_g:
-            cur.append((no, g, m.battle.clone()))
+            b = m.battle.clone()
+            cur.append((no, g, b) if follow_s <= 0 or m.red_truth is None else
+                       (no, g, b, red_script(b, m.red_truth, follow_s)))
             next_g = g + every
     close()
     return out
+
+
+def red_script(battle, red_plays, follow_s):
+    """The user's (red's) real plays in the follow_s seconds after this copy of the twin's battle, as a script for
+    BatchEnv.set_starts: (1, until_ms, [(t_ms, card, x, y), ...]) in battle time. Plays with no known spot are left
+    out (the twin had them, so the cards after them may come out of the cycle late: the env then leaves those out)."""
+    now = battle.time_ms
+    until = now + int(round(follow_s * 1000))
+    plays = [(int(round(g * 1000)), card, float(pos[0]), float(pos[1])) for g, card, pos in red_plays
+             if pos is not None and now < round(g * 1000) <= until]
+    return (1, until, plays)
 
 
 def build(data, every=1.5, names=None, log=print):

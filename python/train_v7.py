@@ -132,6 +132,11 @@ def parse_args():
                         "(tools/push_defence_check.py back_positions): live, h1 cycle 4 spelled the sleeping king there "
                         "and its games against nets never reach such openings (2026-11-11)")
     p.add_argument("--back-every", type=float, default=0.5, help="s of a recorded battle between back positions")
+    p.add_argument("--follow-user", type=float, default=0.0,
+                   help="at the push and back starts the user's side (red) puts down his real next cards for this many "
+                        "s, when and where he did (BatchEnv scripts; meanwhile red's agent only waits), then plays on as "
+                        "a net. Against a net's follow-up waiting at his pushes was never punished; against his real one "
+                        "defending at once was better by +0.10 (2026-11-14, tools/push_follow_check.py). 0 = off")
     p.add_argument("--back-y", type=float, default=27.5,
                    help="red troops at this y or more are behind its princess towers' line (red's king is at 29)")
     p.add_argument("--giant-lead", type=float, nargs="+", default=None,
@@ -180,6 +185,15 @@ class Opponent:
     def weight(self):
         p = self.win_rate()
         return max(p * (1.0 - p), 0.03 if self.bot else 0.02)
+
+
+def script_note(scripts):
+    """For the start log lines: the positions given the user's real next plays (--follow-user)."""
+    if scripts is None:
+        return ""
+    cards = sum(len(sc[2]) for sc in scripts)
+    some = sum(1 for sc in scripts if sc[2])
+    return f"; red plays the user's real next cards there ({cards} cards; {len(scripts) - some} positions where he waited)"
 
 
 def lerp(a, b, t):
@@ -246,36 +260,46 @@ def main():
         lead = f", blue {'-'.join(f'{x:g}' for x in args.giant_lead)} elixir ahead" if args.giant_lead else ""
         log(f"giant starts for {args.giant_starts:.0%} of the episodes: {len(starts)} positions with a giant just put "
             f"behind blue's king{lead} (from {src})")
-        groups.append(("giant", starts, args.giant_starts))
+        groups.append(("giant", starts, args.giant_starts, None))
         del moments
         torch.cuda.empty_cache()
     if args.push_starts > 0:
         sys.path.insert(0, os.path.join(ROOT, "tools"))
         import push_defence_check
-        starts = push_defence_check.push_positions(data, every=args.push_every, push=args.push_value, log=log)
+        scripts = [] if args.follow_user > 0 else None
+        starts = push_defence_check.push_positions(data, every=args.push_every, push=args.push_value, log=log,
+                                                   follow=args.follow_user, scripts=scripts)
         log(f"push starts for {args.push_starts:.0%} of the episodes: {len(starts)} positions of the user's pushes on "
-            f"blue's side in the recorded battles (blue: the bot's side, to defend)")
-        groups.append(("push", starts, args.push_starts))
+            f"blue's side in the recorded battles (blue: the bot's side, to defend)" + script_note(scripts))
+        groups.append(("push", starts, args.push_starts, scripts))
     if args.back_starts > 0:
         sys.path.insert(0, os.path.join(ROOT, "tools"))
         import push_defence_check
-        starts = push_defence_check.back_positions(data, every=args.back_every, y_min=args.back_y, log=log)
+        scripts = [] if args.follow_user > 0 else None
+        starts = push_defence_check.back_positions(data, every=args.back_every, y_min=args.back_y, log=log,
+                                                   follow=args.follow_user, scripts=scripts)
         log(f"back starts for {args.back_starts:.0%} of the episodes: {len(starts)} positions with the user's troops "
-            f"behind his king or a princess tower while his king sleeps (red: the user)")
-        groups.append(("back", starts, args.back_starts))
+            f"behind his king or a princess tower while his king sleeps (red: the user)" + script_note(scripts))
+        groups.append(("back", starts, args.back_starts, scripts))
     if groups:
-        total = sum(share for _, _, share in groups)
+        total = sum(share for _, _, share, _ in groups)
         if total >= 1.0:
             raise SystemExit("the start shares add up to 100% or more: no fresh matches left")
-        # one list for set_starts: each kind drawn (with repeats) in proportion to its share
+        # one list for set_starts: each kind drawn (with repeats) in proportion to its share, its scripts beside it
         rng = random.Random(args.seed + 21)
-        combined = []
-        for what, starts, share in groups:
-            combined += rng.choices(starts, k=max(1, round(4000 * share / total))) if starts else []
-        kept = [env.set_starts(combined, total) for env in (self_env, pool_env)]
+        combined, combined_scripts = [], []
+        for what, starts, share, scripts in groups:
+            picks = rng.choices(range(len(starts)), k=max(1, round(4000 * share / total))) if starts else []
+            combined += [starts[j] for j in picks]
+            combined_scripts += [scripts[j] if scripts is not None else (1, 0, []) for j in picks]
+        use_scripts = any(sc is not None for _, _, _, sc in groups)
+        kept = [env.set_starts(combined, total, combined_scripts if use_scripts else None)
+                for env in (self_env, pool_env)]
         log(f"starts: {total:.0%} of the episodes from {kept[0]} of {len(combined)} positions (" +
-            ", ".join(f"{what} {share:.0%}" for what, _, share in groups) + ")")
-        del combined, groups
+            ", ".join(f"{what} {share:.0%}" for what, _, share, _ in groups) + ")" +
+            (f"; at the push and back ones red puts down the user's real cards for {args.follow_user:g} s"
+             if use_scripts else ""))
+        del combined, combined_scripts, groups
 
     state = {}
     if args.resume:
@@ -698,6 +722,8 @@ def main():
             + f" | ent place {h_place:.2f}/{target_place:.2f} time {h_time:.2f}/{target_time:.2f} "
             f"(x{math.exp(log_alpha['place']):.3f}, x{math.exp(log_alpha['time']):.3f}) | "
             f"w {w_shaping:.2f}/{w_style:.2f} | EV " + "/".join(f"{e:.2f}" for e in ev)
+            + (f" | user's cards put down {sum(e.env.script_made for e in (self_env, pool_env))}, left out "
+               f"{sum(e.env.script_dropped for e in (self_env, pool_env))}" if args.follow_user > 0 else "")
             + f" | play at {play_elixir:.1f} elixir, 8+ {from_8:.0%}, spells {spell_share:.0%}, "
             f"game {np.mean(game_lengths) * args.decision_ticks * 0.05 if game_lengths else 0:.0f}s")
         if iteration % 10 == 0:

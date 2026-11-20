@@ -60,7 +60,8 @@ def speeds(track, window=1.0):
 
 
 def main():
-    files = sys.argv[1:] or sorted(glob.glob(os.path.join(ROOT, "raw", "perception", "cache", "video*.json")))
+    files = sys.argv[1:] or sorted(p for p in glob.glob(os.path.join(ROOT, "raw", "perception", "cache", "video*.json"))
+                                    if not p.endswith("_clocks.json"))  # (deploy clock caches: another format)
     data = ce.load_data()
     found = {c: [] for c in CARD}
     for path in files:

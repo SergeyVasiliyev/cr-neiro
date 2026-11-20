@@ -138,11 +138,13 @@ class VecEnv:
         spots; -1 = the env's own setting): a pool opponent keeps to the spots it was trained on."""
         self.env.set_key_spots(env, side, int(level))
 
-    def set_starts(self, battles, share):
+    def set_starts(self, battles, share, scripts=None):
         """This share of the episodes from now on starts at a copy of one of these battles (e.g. moments of
         recorded matches, python/human_starts.py) instead of a fresh match. They must be built on this env's
-        GameData object (self.data). Returns how many were kept (finished ones or other decks are left out)."""
-        return self.env.set_starts(list(battles), float(share))
+        GameData object (self.data). Returns how many were kept (finished ones or other decks are left out).
+        scripts: None, or one per battle - (side, until_ms, [(t_ms, card, x, y), ...]): the cards that side puts
+        down from there (a player's real next plays), whatever its agent decides until until_ms ([] = none)."""
+        return self.env.set_starts(list(battles), float(share), None if scripts is None else list(scripts))
 
     @property
     def episode_start(self):
