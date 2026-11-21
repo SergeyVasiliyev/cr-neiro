@@ -57,6 +57,10 @@ def parse_args():
     p.add_argument("--anchor-coef", type=float, nargs=2, default=(0.05, 0.0))
     p.add_argument("--anchor-until", type=float, default=0.3, help="share of the run the anchor fades over")
     p.add_argument("--deck", default=",".join(ce.DEFAULT_DECK))
+    p.add_argument("--decks", default=None,
+                   help="a deck pool file (data/classic_decks.json): every episode draws a pair of its decks, each "
+                        "side one, instead of the --deck mirror. The starts built from the starter deck's games "
+                        "(--human/giant/push/back/drill-starts) are not for it")
     p.add_argument("--decision-ticks", type=int, default=6)
     p.add_argument("--spots", type=int, default=2,
                    help="placements: 1 = key spots, 2 = key spots and the tactical ones next to the troops")
@@ -211,8 +215,9 @@ def lerp(a, b, t):
 
 
 def evaluate(model, opponent, args, games):
+    decks = ["--decks", args.decks] if args.decks else ["--deck", args.deck]
     out = subprocess.run([sys.executable, os.path.join(ROOT, "python", "evaluate.py"), "--model", model,
-                          "--opponent", opponent, "--deck", args.deck, "--games", str(games), "--envs", "100",
+                          "--opponent", opponent, *decks, "--games", str(games), "--envs", "100",
                           "--decision-ticks", str(args.decision_ticks), "--greedy"],
                          cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True).stdout
     m = re.search(r"wins \d+ \(([\d.]+)%\)", out)
@@ -248,8 +253,14 @@ def main():
                   delay_ticks=tuple(args.delay), obs_noise=tuple(args.noise), endgame_share=args.endgame,
                   elixir_noise=tuple(args.elixir_noise), live_view=tuple(args.live_view))
     S, P = args.self_envs, args.pool_envs
-    self_env = ce.VecEnv(data, [(deck, deck)], num_envs=S, bots=("noop", "noop"), seed=args.seed * 100 + 1, **common)
-    pool_env = ce.VecEnv(data, [(deck, deck)], num_envs=P, bots=("noop", "noop"), seed=args.seed * 100 + 2, **common)
+    matchups = [(deck, deck)]
+    if args.decks:
+        matchups = ce.pool_matchups(args.decks, data)
+        if args.human_starts or args.giant_starts or args.push_starts or args.back_starts or args.drill_starts:
+            raise SystemExit("--decks: the starts from the starter deck's games don't fit a deck pool")
+        log(f"deck pool {args.decks}: {len(matchups)} matchups")
+    self_env = ce.VecEnv(data, matchups, num_envs=S, bots=("noop", "noop"), seed=args.seed * 100 + 1, **common)
+    pool_env = ce.VecEnv(data, matchups, num_envs=P, bots=("noop", "noop"), seed=args.seed * 100 + 2, **common)
     L = 2 * S + P  # learner rows: self-play blue, self-play red, pool blue
     groups = []  # (what, positions, share of the episodes): starts other than a fresh match, mixed in one list
     if args.human_starts > 0:
@@ -435,6 +446,8 @@ def main():
             fixed, choice = pool, pool + snapshots
         if random.random() < args.fixed_share and fixed:
             return random.choice(fixed)
+        if not choice:  # no nets yet (a pool of bots only, before its first snapshot): a bot
+            return random.choice([o for o in pool if o.bot] or pool)
         return random.choices(choice, weights=[o.weight() for o in choice])[0]
 
     cur = [pick() for _ in range(P)]

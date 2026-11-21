@@ -21,6 +21,8 @@ def main():
     p.add_argument("--opponent", default="heuristic", help="bot name or checkpoint path")
     p.add_argument("--deck", default=",".join(ce.DEFAULT_DECK))
     p.add_argument("--opp-deck", default=None)
+    p.add_argument("--decks", default=None,
+                   help="a deck pool file (data/classic_decks.json): every game draws a pair of its decks instead")
     p.add_argument("--games", type=int, default=500)
     p.add_argument("--envs", type=int, default=100)
     p.add_argument("--greedy", action="store_true", help="argmax actions instead of sampling")
@@ -77,7 +79,8 @@ def main():
     every = [r // step_ticks if args.native_rhythm else 1 for r in rhythm]  # a player decides every n-th step
 
     bots = tuple(pl if isinstance(pl, str) else "noop" for pl in players)
-    env = ce.VecEnv(data, [(deck, opp_deck)], num_envs=min(args.envs, args.games), bots=bots,
+    matchups = ce.pool_matchups(args.decks, data) if args.decks else [(deck, opp_deck)]
+    env = ce.VecEnv(data, matchups, num_envs=min(args.envs, args.games), bots=bots,
                     decision_ticks=step_ticks, seed=args.seed, key_spots=tuple(key_spots), live_view=tuple(args.live_view))
     if args.human_starts > 0:
         import human_starts

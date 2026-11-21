@@ -204,15 +204,23 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
         const Entity* e;
         const Projectile* spell;
         const PendingDeploy* pending;
+        const AreaEffect* area = nullptr;   // a spell on the ground (Poison, Tornado, ...)
+        const Roller* roller = nullptr;     // a rolling one (The Log)
     };
     std::vector<Item> order;
     order.reserve(b.entities().size() + b.projectiles().size());
     for (const auto& e : b.entities()) {
-        const int group = e.is_building() ? (e.team == team ? 0 : 1) : 2;
+        const int group = e.is_tower() ? (e.team == team ? 0 : 1) : 2;
         order.push_back({group, to_own_frame(a, team, e.pos), &e, nullptr, nullptr});
     }
     for (const auto& p : b.projectiles()) {
         if (p.is_spell()) order.push_back({2, to_own_frame(a, team, p.aim), nullptr, &p, nullptr});
+    }
+    for (const auto& ar : b.areas()) {
+        if (ar.card_index >= 0) order.push_back({2, to_own_frame(a, team, ar.pos), nullptr, nullptr, nullptr, &ar, nullptr});
+    }
+    for (const auto& roll : b.rollers()) {
+        order.push_back({2, to_own_frame(a, team, roll.pos), nullptr, nullptr, nullptr, nullptr, &roll});
     }
     for (const auto& p : b.pending()) {  // only our own blueprints: the opponent's are hidden from us
         if (p.team == team && p.unit <= 0) order.push_back({2, to_own_frame(a, team, p.pos), nullptr, nullptr, &p});
@@ -256,13 +264,27 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
             out.entity_mask[i] = 1;
             continue;
         }
+        if (order[i].area || order[i].roller) {  // a spell on the ground: where, how big, how long it has left
+            const Vec2 p = order[i].own_pos;
+            const AreaEffect* ar = order[i].area;
+            const Roller* roll = order[i].roller;
+            f[kOwn] = (ar ? ar->team : roll->team) == team ? 1.0f : 0.0f;
+            f[kX] = static_cast<float>(p.x / a.width);
+            f[kY] = static_cast<float>(p.y / a.height);
+            f[kDeploying] = ar ? (ar->delay_ms + ar->ms_left) / 1000.0f : static_cast<float>(roll->left / std::max(0.1, roll->speed));
+            f[kRadius] = static_cast<float>(ar ? ar->radius : roll->half_width);
+            f[kSpell] = 1.0f;
+            out.entity_token[i] = kFirstCardToken + (ar ? ar->card_index : roll->card_index);
+            out.entity_mask[i] = 1;
+            continue;
+        }
         const Entity& e = *order[i].e;
         Vec2 p = to_own_frame(a, team, e.pos);
-        if (live && e.team != team && !e.is_building() && e.play >= 0 &&
+        if (live && e.team != team && !e.is_tower() && e.play >= 0 &&
             !play_seen(*live, them, static_cast<size_t>(e.play), b.time_ms())) {
             continue;  // a troop of a play it missed, or has not made out yet: the slot stays empty
         }
-        if (cfg.rng && e.team != team && !e.is_building()) {
+        if (cfg.rng && e.team != team && !e.is_tower()) {
             std::uniform_real_distribution<double> u(0.0, 1.0);
             if (cfg.miss_enemy > 0.0 && u(*cfg.rng) < cfg.miss_enemy) continue;  // not seen: the slot stays empty
             if (cfg.jitter > 0.0) {
@@ -275,7 +297,7 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
         f[kY] = static_cast<float>(p.y / a.height);
         f[kHpFrac] = static_cast<float>(e.hp) / e.max_hp;
         f[kHpAbs] = static_cast<float>(e.hp / kHpScale);
-        if (live && !e.is_building()) {  // (the towers' HP is read from their digits: exact)
+        if (live && !e.is_tower()) {  // (the towers' HP is read from their digits: exact)
             const double seen = seen_hp_frac(*live, e);
             f[kHpFrac] = static_cast<float>(seen);
             f[kHpAbs] = static_cast<float>(seen * e.max_hp / kHpScale);
@@ -504,23 +526,39 @@ void action_mask(const Battle& b, Team team, uint8_t* out, int key_spots) {
         any = any || affordable[slot];
     }
     if (!any) return;
-    bool spell[kHandSize];
+    // Where each card may go: 0 our half (troops, buildings), 1 anywhere (spells), 2 anywhere but on a building
+    // (Goblin Drill), 3 our half, buildings too (The Log).
+    int where[kHandSize];
+    bool any_dig = false;
     for (int slot = 0; slot < kHandSize; ++slot) {
-        spell[slot] = !me.hand[slot].empty() && b.data().card(me.hand[slot]).type == CardType::Spell;
+        where[slot] = 0;
+        if (me.hand[slot].empty()) continue;
+        const CardDef& card = b.data().card(me.hand[slot]);
+        where[slot] = card.anywhere ? 2 : card.own_half ? 3 : card.type == CardType::Spell ? 1 : 0;
+        any_dig = any_dig || where[slot] == 2;
     }
+    auto allowed = [&](Vec2 pos, bool troop_ok, bool spell_ok, int slot) {
+        switch (where[slot]) {
+            case 0: return troop_ok;
+            case 1: return spell_ok;
+            case 2: return spell_ok && b.can_dig_at(pos);
+            default: return b.can_roll_from(team, pos);
+        }
+    };
     if (key_spots > 0) {
         std::vector<int> troops, spells;
         key_spot_cells(b, team, troops, spells, key_spots >= 2);
         for (int cell : troops) {
             if (!b.can_deploy_at(team, cell_position(b, team, cell))) continue;
             for (int slot = 0; slot < kHandSize; ++slot) {
-                if (affordable[slot] && !spell[slot]) out[1 + slot * kCells + cell] = 1;
+                if (affordable[slot] && (where[slot] == 0 || where[slot] == 3)) out[1 + slot * kCells + cell] = 1;
             }
         }
         for (int cell : spells) {
-            if (!b.can_cast_at(cell_position(b, team, cell))) continue;
+            const Vec2 pos = cell_position(b, team, cell);
+            if (!b.can_cast_at(pos)) continue;
             for (int slot = 0; slot < kHandSize; ++slot) {
-                if (affordable[slot] && spell[slot]) out[1 + slot * kCells + cell] = 1;
+                if (affordable[slot] && where[slot] != 0 && allowed(pos, false, true, slot)) out[1 + slot * kCells + cell] = 1;
             }
         }
         return;
@@ -530,9 +568,10 @@ void action_mask(const Battle& b, Team team, uint8_t* out, int key_spots) {
         const bool troop_ok = b.can_deploy_at(team, pos);
         const bool spell_ok = b.can_cast_at(pos);
         for (int slot = 0; slot < kHandSize; ++slot) {
-            if (affordable[slot] && (spell[slot] ? spell_ok : troop_ok)) out[1 + slot * kCells + cell] = 1;
+            if (affordable[slot] && allowed(pos, troop_ok, spell_ok, slot)) out[1 + slot * kCells + cell] = 1;
         }
     }
+    (void)any_dig;
 }
 
 int encode_action(const Battle& b, Team team, int slot, Vec2 pos) {

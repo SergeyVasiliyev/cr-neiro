@@ -15,14 +15,15 @@ namespace cr {
 constexpr int kHandSize = 4;
 constexpr int kDeckSize = 8;
 
-enum class EntityKind : uint8_t { Troop, PrincessTower, KingTower };
+enum class EntityKind : uint8_t { Troop, PrincessTower, KingTower, Building };
 
 struct Entity {
     EntityId id = kNoEntity;
     EntityKind kind = EntityKind::Troop;
     Team team = Team::Blue;
     std::string def_id;  // card id, or "princess_tower" / "king_tower"
-    int card_index = -1;  // CardDef::index for troops, -1 for towers
+    int card_index = -1;  // CardDef::index for troops and buildings, -1 for towers
+    const CardDef* def = nullptr;  // troops and buildings: their card (GameData outlives every battle)
     Vec2 pos;
     double radius = 0.5;
     double mass = 1.0;
@@ -49,8 +50,80 @@ struct Entity {
     int unit = -1;       // ... and which unit of that play's group
     int spell_damage = 0;  // troops: HP taken from spells (rewards count it at the troop's full worth)
 
+    // --- Classic Decks pool mechanics (UnitDef) ---
+    int shield = 0;
+    double decay_per_ms = 0.0;  // buildings: HP lost per ms (lifetime)
+    double decay_acc = 0.0;
+    int spawn_ms = -1;          // waves: time to the next one (-1: makes none)
+    int stun_ms = 0;
+    int slow_ms = 0;
+    double slow = 0.0;
+    int rage_ms = 0;
+    double rage = 0.0;
+    int curse_ms = 0;
+    Team curse_team = Team::Blue;
+    const CardDef* curse_unit = nullptr;
+    double walked = 0.0;   // charge: tiles walked since it last stopped
+    bool charging = false;
+    int ramp_ms = 0;       // inferno: time on the current target
+    EntityId host = kNoEntity;  // riders: the unit they sit on (out of reach while on it)
+    Vec2 host_offset{0.0, 0.0};
+    bool dashing = false;
+    int dash_cd_ms = 0;
+    int hook_ms = -1;      // >= 0: the hook is being thrown (ms left)
+    int hook_cd_ms = 0;
+
     bool is_building() const { return kind != EntityKind::Troop; }
+    bool is_tower() const { return kind == EntityKind::PrincessTower || kind == EntityKind::KingTower; }
+    bool targetable() const { return host == kNoEntity && !dashing; }
     bool alive() const { return hp > 0; }
+};
+
+// A spell's lasting effect on the ground (Zap, Poison, Tornado, Lightning), a death explosion that comes late
+// (Balloon's bomb), a rage aura (Lumberjack).
+struct AreaEffect {
+    Team team = Team::Blue;
+    Vec2 pos;
+    double radius = 0.0;
+    int delay_ms = 0;       // before it starts
+    int ms_left = 0;        // how long it lasts once started
+    bool started = false;
+    int damage = 0;         // once, when it starts
+    double pushback = 0.0;
+    int tower_damage_pct = 100;
+    int tower_damage = -1;       // >= 0: a crown tower takes this instead
+    int tower_tick_damage = -1;  // ... of a tick
+    int elapsed_ms = 0;
+    int duration_ms = 0;    // pulling and auras for this long; ticks and strikes may come later
+    int ticks_left = -1;    // -1: tick while it lasts
+    int tick_ms = 0, tick_left = 0, tick_damage = 0;
+    double pull = 0.0;
+    int max_targets = 0, hits = 0, hit_ms = 0, hit_left = 0;  // Lightning: the biggest targets one by one
+    std::vector<EntityId> hit;
+    BuffDef buff;
+    double rage = 0.0;      // > 0: an aura speeding up friendly troops
+    TargetRules targets;
+    int card_index = -1;    // the spell card, for the observation (-1: not shown)
+    std::string source;
+    bool done = false;
+};
+
+// A spell rolling forward over the ground from where it was put down (The Log, Barbarian Barrel).
+struct Roller {
+    Team team = Team::Blue;
+    Vec2 pos;
+    double dir = 1.0;       // +1 up the arena (Blue), -1 down (Red)
+    double half_width = 0.0, half_depth = 0.0;
+    double left = 0.0;      // tiles still to roll
+    double speed = 0.0;
+    int damage = 0;
+    int tower_damage_pct = 100;
+    double pushback = 0.0;
+    std::vector<EntityId> hit;
+    SpawnDef spawn;         // left where it stops
+    int card_index = -1;
+    std::string source;
+    bool done = false;
 };
 
 struct Projectile {
@@ -68,6 +141,11 @@ struct Projectile {
     std::string source;     // who fired it (card id / tower), for the damage log
     TargetRules targets;
     bool done = false;
+    EntityId shooter = kNoEntity;  // the unit that fired it (an Electro Giant zaps it back)
+    BuffDef buff;           // what it does besides damage
+    int heal = 0;           // heals friends within heal_radius where it lands (Heal Spirit)
+    double heal_radius = 0.0;
+    SpawnDef spawn;         // units it leaves where it lands (Goblin Barrel)
 
     bool is_spell() const { return card_index >= 0; }
 };
@@ -106,6 +184,18 @@ struct PendingDeploy {
     int unit = -1;  // index of the unit within the group; -1 for a spell
     int ms_left = 0;
     int play_index = -1;  // into PlayerState::plays
+    int unit_card = -1;   // the card whose unit comes out, if not the played card's (Goblin Gang's spear goblins)
+};
+
+// A unit made during a tick (a wave, a death spawn, a spell's goblins), put on the field when the tick's updates
+// are done (the entity list must not grow while they run).
+struct QueuedSpawn {
+    Team team = Team::Blue;
+    const CardDef* def = nullptr;
+    Vec2 pos;
+    int deploy_ms = -1;      // -1: the unit's own deploy time
+    EntityId host = kNoEntity;
+    Vec2 host_offset{0.0, 0.0};
 };
 
 struct CardPlay {
@@ -136,6 +226,8 @@ public:
     bool play(Team team, int hand_slot, Vec2 pos);
     bool can_deploy_at(Team team, Vec2 pos) const;  // troops
     bool can_cast_at(Vec2 pos) const;               // spells: anywhere on the arena
+    bool can_dig_at(Vec2 pos) const;                // buildings put down anywhere (Goblin Drill): not on a building
+    bool can_roll_from(Team team, Vec2 pos) const;  // own-half spells (The Log): our half and pockets, buildings too
 
     // Digital twin: repeats a play seen in the real game. The card (from the team's deck) is swapped
     // into the hand if the simulated cycle disagrees, a troop position the simulator would refuse is
@@ -177,6 +269,8 @@ public:
     const PlayerState& player(Team team) const { return players_[idx(team)]; }
     const std::vector<Entity>& entities() const { return entities_; }
     const std::vector<Projectile>& projectiles() const { return projectiles_; }
+    const std::vector<AreaEffect>& areas() const { return areas_; }
+    const std::vector<Roller>& rollers() const { return rollers_; }
     const std::vector<PendingDeploy>& pending() const { return pending_; }
     int deploy_delay_ms() const;  // blueprint delay for a card played now
     int card_refill_ms() const;   // how long the slot of a card played now stays empty
@@ -201,15 +295,23 @@ private:
     Vec2 to_absolute(Team team, Vec2 blue_pos) const;
     void start_play(Team team, int hand_slot, std::optional<Vec2> pos);  // no legality checks
     void spawn_towers(Team team);
-    void spawn_unit(Team team, const CardDef& card, Vec2 pos, int unit);
+    // A played card's unit `unit` of its group (`as`: the card whose unit it is, if not `card`).
+    void spawn_unit(Team team, const CardDef& card, Vec2 pos, int unit, const CardDef* as = nullptr);
+    // A unit on the field at pos (the end of entities_), with its riders queued.
+    Entity& add_unit(Team team, const CardDef& def, Vec2 pos);
+    void queue_spawns(Team team, const SpawnDef& s, Vec2 at, Vec2 forward);
+    void flush_spawns();
     void materialize_pending(int dt);
     void cast_spell(Team team, const CardDef& card, Vec2 pos, int elapsed_ms = 0);
 
     void regen_elixir(int dt);
     void refill_hands(int dt);
+    void update_timers(Entity& e, int dt);  // buffs, cooldowns, decay, waves
     void update_troop(Entity& e, int dt);
     void update_tower(Entity& e, int dt);
     void update_projectiles(int dt);
+    void update_areas(int dt);
+    void update_rollers(int dt);
     void resolve_collisions();
     void keep_out_of_river(Entity& e) const;
     void remove_dead();
@@ -227,9 +329,17 @@ private:
     Vec2 steer_around_buildings(const Entity& e, Vec2 waypoint, const Entity* target) const;
     void attack_tick(Entity& e, Entity& target, int dt);
     void fire(Entity& e, Entity& target);
-    void apply_damage(Entity& target, int damage, int tower_damage_pct);
+    // shooter: the unit that dealt it (kNoEntity: a spell or an aura), for a reflected zap. tower_abs >= 0: what a crown
+    // tower takes instead (tower_damage_pct then unused).
+    void apply_damage(Entity& target, int damage, int tower_damage_pct, EntityId shooter = kNoEntity, int tower_abs = -1);
     void apply_splash(Team source, Vec2 center, double radius, int damage, int tower_damage_pct,
-                      const TargetRules& targets, double pushback = 0.0);
+                      const TargetRules& targets, double pushback = 0.0, const BuffDef* buff = nullptr,
+                      EntityId shooter = kNoEntity, int tower_abs = -1);
+    void apply_area(Team source, Vec2 center, const AreaDamageDef& a);  // ground and air, towers too
+    void apply_buff(Entity& e, const BuffDef& b, Team source);
+    void heal_around(Team team, Vec2 center, double radius, int amount);
+    double speed_factor(const Entity& e) const;   // slow and rage on walking
+    double attack_factor(const Entity& e) const;  // ... and on the attack's timers
     void knock_back(Entity& e, Vec2 from, double distance) const;
     void knocked(Entity& e, int dt) const;  // a tick of a knockback in progress
     void activate_king(Entity& king);
@@ -252,6 +362,9 @@ private:
     std::array<TowerIds, 2> towers_;
     std::vector<Entity> entities_;
     std::vector<Projectile> projectiles_;
+    std::vector<AreaEffect> areas_;
+    std::vector<Roller> rollers_;
+    std::vector<QueuedSpawn> spawn_queue_;
     std::vector<PendingDeploy> pending_;
     EntityId next_id_ = 0;
 

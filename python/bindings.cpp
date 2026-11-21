@@ -63,7 +63,8 @@ PYBIND11_MODULE(crsim, m) {
     py::enum_<EntityKind>(m, "EntityKind")
         .value("TROOP", EntityKind::Troop)
         .value("PRINCESS_TOWER", EntityKind::PrincessTower)
-        .value("KING_TOWER", EntityKind::KingTower);
+        .value("KING_TOWER", EntityKind::KingTower)
+        .value("BUILDING", EntityKind::Building);
     py::enum_<Phase>(m, "Phase")
         .value("REGULATION", Phase::Regulation)
         .value("OVERTIME", Phase::Overtime)
@@ -114,7 +115,10 @@ PYBIND11_MODULE(crsim, m) {
         .def_readonly("deploy_time_ms", &UnitDef::deploy_time_ms)
         .def_readonly("first_attack_delay_ms", &UnitDef::first_attack_delay_ms)
         .def_readonly("attack", &UnitDef::attack);
-    py::enum_<CardType>(m, "CardType").value("TROOP", CardType::Troop).value("SPELL", CardType::Spell);
+    py::enum_<CardType>(m, "CardType")
+        .value("TROOP", CardType::Troop)
+        .value("SPELL", CardType::Spell)
+        .value("BUILDING", CardType::Building);
     py::class_<SpellDef>(m, "SpellDef")
         .def_readonly("damage", &SpellDef::damage)
         .def_readonly("radius", &SpellDef::radius)
@@ -137,6 +141,9 @@ PYBIND11_MODULE(crsim, m) {
         .def_readonly("spawn_stagger_ms", &CardDef::spawn_stagger_ms)
         .def_readonly("unit", &CardDef::unit)
         .def_readonly("unsupported", &CardDef::unsupported)
+        .def_readonly("playable", &CardDef::playable)
+        .def_readonly("anywhere", &CardDef::anywhere)
+        .def_property_readonly("placed_anywhere", &CardDef::placed_anywhere)
         .def_property_readonly("fully_supported", &CardDef::fully_supported);
     py::class_<ArenaDef>(m, "ArenaDef")
         .def_readonly("width", &ArenaDef::width)
@@ -180,7 +187,11 @@ PYBIND11_MODULE(crsim, m) {
         .def_readonly("active", &Entity::active)
         .def_readonly("play", &Entity::play)
         .def_readonly("unit", &Entity::unit)
-        .def_property_readonly("is_building", &Entity::is_building);
+        .def_property_readonly("is_building", &Entity::is_building)
+        .def_property_readonly("is_tower", &Entity::is_tower)
+        .def_readonly("shield", &Entity::shield)
+        .def_readonly("stun_ms", &Entity::stun_ms)
+        .def_readonly("host", &Entity::host);
     py::class_<Projectile>(m, "Projectile")
         .def_readonly("team", &Projectile::team)
         .def_readonly("pos", &Projectile::pos)
@@ -188,7 +199,24 @@ PYBIND11_MODULE(crsim, m) {
         .def_readonly("splash_radius", &Projectile::splash_radius)
         .def_readonly("delay_ms", &Projectile::delay_ms)
         .def_readonly("card_index", &Projectile::card_index)
+        .def_readonly("target", &Projectile::target)
+        .def_readonly("damage", &Projectile::damage)
         .def_property_readonly("is_spell", &Projectile::is_spell);
+    py::class_<AreaEffect>(m, "AreaEffect")
+        .def_readonly("team", &AreaEffect::team)
+        .def_readonly("pos", &AreaEffect::pos)
+        .def_readonly("radius", &AreaEffect::radius)
+        .def_readonly("delay_ms", &AreaEffect::delay_ms)
+        .def_readonly("ms_left", &AreaEffect::ms_left)
+        .def_readonly("rage", &AreaEffect::rage)
+        .def_readonly("card_index", &AreaEffect::card_index)
+        .def_readonly("source", &AreaEffect::source);
+    py::class_<Roller>(m, "Roller")
+        .def_readonly("team", &Roller::team)
+        .def_readonly("pos", &Roller::pos)
+        .def_readonly("left", &Roller::left)
+        .def_readonly("half_width", &Roller::half_width)
+        .def_readonly("card_index", &Roller::card_index);
     py::class_<PendingDeploy>(m, "PendingDeploy")
         .def_readonly("team", &PendingDeploy::team)
         .def_readonly("card_index", &PendingDeploy::card_index)
@@ -255,6 +283,8 @@ PYBIND11_MODULE(crsim, m) {
         .def("player", &Battle::player, py::return_value_policy::reference_internal)
         .def_property_readonly("entities", &Battle::entities)
         .def_property_readonly("projectiles", &Battle::projectiles)
+        .def_property_readonly("areas", &Battle::areas)
+        .def_property_readonly("rollers", &Battle::rollers)
         .def_property_readonly("pending", &Battle::pending)
         .def_property_readonly("deploy_delay_ms", &Battle::deploy_delay_ms)
         .def_property_readonly("card_refill_ms", &Battle::card_refill_ms)

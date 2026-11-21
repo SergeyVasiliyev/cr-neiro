@@ -62,6 +62,17 @@ def parse_deck(text, data):
     return deck
 
 
+def pool_matchups(path, data):
+    """Every (blue deck, red deck) pair of a deck pool file ({"decks": {name: [8 cards]}}, data/classic_decks.json):
+    one is drawn for every new episode, so each side meets every deck, mirrors too."""
+    import json
+    decks = json.load(open(path, encoding="utf-8"))["decks"]
+    for name, cards in decks.items():
+        parse_deck(",".join(cards), data)  # (checks them)
+    lists = list(decks.values())
+    return [(blue, red) for blue in lists for red in lists]
+
+
 def random_decks(data, count, seed=0, supported_only=True):
     pool = supported_cards(data) if supported_only else sorted(data.cards)
     rng = random.Random(seed)
