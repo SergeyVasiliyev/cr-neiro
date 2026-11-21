@@ -137,6 +137,16 @@ def parse_args():
                         "s, when and where he did (BatchEnv scripts; meanwhile red's agent only waits), then plays on as "
                         "a net. Against a net's follow-up waiting at his pushes was never punished; against his real one "
                         "defending at once was better by +0.10 (2026-11-14, tools/push_follow_check.py). 0 = off")
+    p.add_argument("--push-deficit", type=float, nargs=3, default=None, metavar=("SHARE", "LO", "HI"),
+                   help="at this share of the push starts blue is LO-HI elixir poorer than in the recording (drawn "
+                        "evenly): defending his pushes from behind on elixir (the user's idea, 2026-11-21)")
+    p.add_argument("--drill-starts", type=float, default=0.0,
+                   help="share of episodes starting at a defence drill (python/defence_starts.py, the user's idea "
+                        "2026-11-21): red begins a hard push on blue's side - a giant with a mini pekka and a "
+                        "musketeer behind, a back giant with support, two lanes at once - its cards put down by "
+                        "script, then it plays on; mostly in double and triple elixir, blue often behind on elixir. "
+                        "Live his big pushes break the bot, and its own games rarely make such pushes")
+    p.add_argument("--drill-count", type=int, default=3000, help="how many drill positions")
     p.add_argument("--back-y", type=float, default=27.5,
                    help="red troops at this y or more are behind its princess towers' line (red's king is at 29)")
     p.add_argument("--giant-lead", type=float, nargs="+", default=None,
@@ -269,8 +279,22 @@ def main():
         scripts = [] if args.follow_user > 0 else None
         starts = push_defence_check.push_positions(data, every=args.push_every, push=args.push_value, log=log,
                                                    follow=args.follow_user, scripts=scripts)
+        deficit = ""
+        if args.push_deficit:
+            share, lo, hi = args.push_deficit
+            rng = random.Random(args.seed + 41)
+            cut = []
+            for j, b in enumerate(starts):
+                if rng.random() < share:
+                    c = b.clone()  # (a copy built on the same `data`)
+                    d = rng.uniform(lo, hi)
+                    c.set_elixir(ce.crsim.Team.BLUE, max(0.0, c.player(ce.crsim.Team.BLUE).elixir - d))
+                    starts[j] = c
+                    cut.append(d)
+            deficit = (f"; at {len(cut)} of them blue has {lo:g}-{hi:g} elixir less than in the recording "
+                       f"(mean {np.mean(cut) if cut else 0:.1f})")
         log(f"push starts for {args.push_starts:.0%} of the episodes: {len(starts)} positions of the user's pushes on "
-            f"blue's side in the recorded battles (blue: the bot's side, to defend)" + script_note(scripts))
+            f"blue's side in the recorded battles (blue: the bot's side, to defend)" + script_note(scripts) + deficit)
         groups.append(("push", starts, args.push_starts, scripts))
     if args.back_starts > 0:
         sys.path.insert(0, os.path.join(ROOT, "tools"))
@@ -281,6 +305,12 @@ def main():
         log(f"back starts for {args.back_starts:.0%} of the episodes: {len(starts)} positions with the user's troops "
             f"behind his king or a princess tower while his king sleeps (red: the user)" + script_note(scripts))
         groups.append(("back", starts, args.back_starts, scripts))
+    if args.drill_starts > 0:
+        import defence_starts
+        starts, scripts, _, _ = defence_starts.generate(data, deck, args.drill_count, seed=args.seed + 31, log=log)
+        log(f"drill starts for {args.drill_starts:.0%} of the episodes: {len(starts)} positions where red begins a "
+            f"hard push on blue's side (its cards by script, then it plays on; blue defends)")
+        groups.append(("drill", starts, args.drill_starts, scripts))
     if groups:
         total = sum(share for _, _, share, _ in groups)
         if total >= 1.0:
@@ -289,7 +319,7 @@ def main():
         rng = random.Random(args.seed + 21)
         combined, combined_scripts = [], []
         for what, starts, share, scripts in groups:
-            picks = rng.choices(range(len(starts)), k=max(1, round(4000 * share / total))) if starts else []
+            picks = rng.choices(range(len(starts)), k=max(1, round(8000 * share / total))) if starts else []
             combined += [starts[j] for j in picks]
             combined_scripts += [scripts[j] if scripts is not None else (1, 0, []) for j in picks]
         use_scripts = any(sc is not None for _, _, _, sc in groups)
@@ -722,8 +752,9 @@ def main():
             + f" | ent place {h_place:.2f}/{target_place:.2f} time {h_time:.2f}/{target_time:.2f} "
             f"(x{math.exp(log_alpha['place']):.3f}, x{math.exp(log_alpha['time']):.3f}) | "
             f"w {w_shaping:.2f}/{w_style:.2f} | EV " + "/".join(f"{e:.2f}" for e in ev)
-            + (f" | user's cards put down {sum(e.env.script_made for e in (self_env, pool_env))}, left out "
-               f"{sum(e.env.script_dropped for e in (self_env, pool_env))}" if args.follow_user > 0 else "")
+            + (f" | scripted cards put down {sum(e.env.script_made for e in (self_env, pool_env))}, left out "
+               f"{sum(e.env.script_dropped for e in (self_env, pool_env))}"
+               if args.follow_user > 0 or args.drill_starts > 0 else "")
             + f" | play at {play_elixir:.1f} elixir, 8+ {from_8:.0%}, spells {spell_share:.0%}, "
             f"game {np.mean(game_lengths) * args.decision_ticks * 0.05 if game_lengths else 0:.0f}s")
         if iteration % 10 == 0:

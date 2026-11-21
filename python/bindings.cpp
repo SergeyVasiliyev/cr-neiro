@@ -395,6 +395,7 @@ PYBIND11_MODULE(crsim, m) {
                         StartScript s;
                         s.side = t[0].cast<int>();
                         s.until_ms = t[1].cast<int>();
+                        if (t.size() > 3) s.exclusive = t[3].cast<bool>();  // (side, until_ms, plays[, exclusive])
                         for (py::handle pl : t[2]) {
                             const auto q = pl.cast<py::tuple>();
                             ScriptedPlay sp;

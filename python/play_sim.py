@@ -1,7 +1,7 @@
 """Play the bot yourself in the simulator: a window laid out like the game, you at the bottom (blue), the bot at
 the top (red), both with the starter deck.
 
-    scripts\\play_sim.bat [--bot runs\\h1\\final_cycle10.pt] [--seed 7]
+    scripts\\play_sim.bat [--bot runs\\h1\\final_cycle11.pt] [--seed 7]
 
 Pick a card (click it, or keys 1-4), then click a tile; or drag the card onto the arena. Right click or Esc:
 cancel. Space: start / pause. N: the next game once this one is over.
@@ -37,7 +37,7 @@ import crsim  # noqa: E402
 
 BLUE, RED = crsim.Team.BLUE, crsim.Team.RED
 DECK = "knight,archers,minions,arrows,fireball,giant,mini_pekka,musketeer".split(",")
-DEFAULT_BOT = "runs/h1/final_cycle10.pt"
+DEFAULT_BOT = "runs/h1/final_cycle11.pt"
 ART_DIR = os.path.join(ROOT, "raw", "perception", "card_art")
 GAMES_DIR = os.path.join(ROOT, "raw", "sim_games")
 

@@ -19,5 +19,11 @@
     "x3": 1400
   },
   "_comment_speed": "speed_scale: the real game moves everything ~1.15x faster than speed/60 tiles per second from the game files. Measured over 5 recordings (tools/measure_speeds.py, line fits over straight 2.5 s walks): medium units 1.11-1.16 tiles/s (file 60), giant 0.89-0.91 (45), minions 1.75 (90); vertical walks 1.17x, horizontal 1.10x; own fireball 11.7 vs 10.0, arrows 22.4 vs 18.3 tiles/s. Applied to walking and to all projectiles. 2026-10-18, tools/speed_check.py over 47 recordings (1 s walking windows, medians): knight 1.183, archer 1.170, musketeer 1.180 tiles/s (file 60), mini pekka 1.768, minions 1.738 (90); the same vertical and sideways, in both halves: 1.175 (giant on its own, see overrides.json).",
-  "speed_scale": 1.175
+  "speed_scale": 1.175,
+  "movement": {
+    "_why": "Same-side crowding (battle.cpp follow_step / resolve_collisions). In the recordings a mini pekka walking within 2 tiles behind its own walking giant (no enemy within 4 tiles) is ahead of it 3 s later 12% of the time (178 cases in 78 recordings) and gains 0.10 tiles on it in a second (649 cases); with follow_width 0.4 the simulator had 37% and 0.32 - it slid along the giant's side and past (the user, 2026-11-21: in the game a mini pekka gets past its giant harder). 0.85 (up to ~1 tile off the giant's line it follows it): 15% and 0.07. follow_gap and pass_slide hardly change it (tools/crowd_check.py, grid 2026-11-21).",
+    "follow_width": 0.85,
+    "follow_gap": 0.3,
+    "pass_slide": 2.0
+  }
 }

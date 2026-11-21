@@ -130,7 +130,7 @@ int64_t BatchEnv::script_dropped() const {
 bool BatchEnv::scripted(const Slot& s, int side) const {
     if (s.script < 0) return false;
     const StartScript& sc = scripts_[s.script];
-    return sc.side == side && s.battle->time_ms() < sc.until_ms;
+    return sc.exclusive && sc.side == side && s.battle->time_ms() < sc.until_ms;
 }
 
 void BatchEnv::run_script(Slot& s, int i) {
@@ -143,6 +143,7 @@ void BatchEnv::run_script(Slot& s, int i) {
         return;
     }
     const Team team = static_cast<Team>(sc.side);
+    if (!sc.exclusive && s.pending[sc.side].ticks >= 0) return;  // its agent's move first (its slot stays as chosen)
     while (s.script_next < sc.plays.size() && sc.plays[s.script_next].t_ms <= b.time_ms()) {
         const ScriptedPlay& sp = sc.plays[s.script_next];
         const PlayerState& p = b.player(team);

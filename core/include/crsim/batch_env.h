@@ -64,6 +64,11 @@ struct StartScript {
     int side = 1;      // 0 blue, 1 red
     int until_ms = 0;  // battle time its agent takes over
     std::vector<ScriptedPlay> plays;  // in time order
+    // false: the side's agent (or bot) plays on meanwhile too - the plays are only put down besides its own moves,
+    // never while a move of its is on its way (that could take the card from the slot it chose). For the defence
+    // drills (python/defence_starts.py, 2026-11-21): the push is scripted, but a net plays the attacker throughout,
+    // e.g. arrows on the defenders while the push is built (the user's wish).
+    bool exclusive = true;
 };
 // A scripted card that can't be put down when due (its elixir not there yet, the card not back in hand, the spot
 // not open) is tried again every tick for this long, then left out.

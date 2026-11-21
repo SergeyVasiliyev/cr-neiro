@@ -636,6 +636,13 @@ class LiveMatch:
                 # had it. A hit on him wakes him in the simulator first, then his readings count again.
                 self.tower_reads.pop(name, None)
                 continue
+            if king is not None and hp < 0.15 * king.hp:
+                # A small fraction of what the simulator has is no damage the twin missed (it plays every hit out
+                # itself) but the same misreading over an awake king: live 2026-11-21 the user's king, awake after
+                # his princess tower fell, sat at 11 HP in the twin from 145 s to the end (the screen said 4824),
+                # and the net sat at 10 elixir through his double-elixir push.
+                self.tower_reads.pop(name, None)
+                continue
             last, n = self.tower_reads.get(name, (None, 0))
             n = n + 1 if hp == last else 1
             self.tower_reads[name] = (hp, n)

@@ -45,6 +45,13 @@ def main():
                         "how it copes with what he really did, not with a net's follow-up. Compare nets as blue against "
                         "the same opponent")
     p.add_argument("--follow-user", type=float, default=15.0, help="with --user-starts: s of his real cards (0: none)")
+    p.add_argument("--drill", type=int, default=0,
+                   help="every game starts at one of this many defence drills (python/defence_starts.py): red begins "
+                        "a hard push on blue's side (its cards put down by script, then the opponent plays on), mostly "
+                        "in double and triple elixir, blue often behind on elixir. Blue (the model) defends; also "
+                        "prints where its first troop goes after the push starts. Compare nets as blue against the "
+                        "same opponent")
+    p.add_argument("--drill-seed", type=int, default=2026, help="(train_v7.py --drill-starts builds its own from seed+31)")
     p.add_argument("--live-view", type=float, nargs=5, default=(0.0, 0.0, 0.0, 0.0, 0.0),
                    help="both sides see the other like the live bot's twin does (train_v7.py --live-view; measured "
                         "2026-11-15: 0.035 0.03 0.9 0.05 0.3); all 0: exactly")
@@ -89,6 +96,16 @@ def main():
         env.reset()
         print(f"user starts ({args.user_starts}): {kept} positions"
               + (f", red puts down the user's real cards for {args.follow_user:g} s" if scripts is not None else ""))
+    drill = None
+    if args.drill > 0:
+        import defence_starts
+        battles, scripts, lanes, kinds = defence_starts.generate(data, deck, args.drill, seed=args.drill_seed)
+        kept = env.set_starts(battles, 1.0, scripts)
+        env.reset()
+        if kept != len(battles):
+            print(f"warning: {len(battles) - kept} drills not kept, the lane stats below are off")
+        drill = dict(lanes=lanes, kinds=kinds, push_ms=[sc[2][0][0] for sc in scripts], first=[None] * env.num_envs,
+                     where=[], reaction=[], by_kind={})
     step_no = 0
     results, crowns, lengths = [], [], []
     started = env.num_envs
@@ -100,6 +117,7 @@ def main():
     play_elixir, spells = [], 0
     giant_token = ce.crsim.rl.FIRST_CARD_TOKEN + data.cards["giant"].index
     giants, giants_back = 0, 0  # its giants, and those put behind its king (the back two rows: a push built from there)
+    troop_x = {}  # card token -> [troops it put down, of them between the princess towers' lanes (x 6-12)]
     t0 = time.time()
     while len(results) < args.games:
         actions = np.full((env.num_envs, 2), ce.BOT_ACTION, dtype=np.int32)
@@ -128,6 +146,33 @@ def main():
             if card == giant_token:
                 giants += 1
                 giants_back += int((taken[i] - 1) % ce.CELLS // ce.GRID_W < 2)
+            if not spell_token[card]:
+                tx = troop_x.setdefault(int(card), [0, 0])
+                tx[0] += 1
+                tx[1] += int(6.0 <= (taken[i] - 1) % ce.CELLS % ce.GRID_W + 0.5 <= 12.0)
+            if drill is not None and not spell_token[card] and drill["first"][i] is None:
+                cell = (taken[i] - 1) % ce.CELLS  # blue's own frame is the arena's
+                drill["first"][i] = (cell % ce.GRID_W + 0.5, cell // ce.GRID_W + 0.5, env.battle(i).time_ms)
+        for i in np.flatnonzero(done & active):
+            if drill is not None:
+                n = int(env.episode_start[i])
+                if n >= 0:
+                    lane, push_ms, first = drill["lanes"][n], drill["push_ms"][n], drill["first"][i]
+                    if first is None or first[2] - push_ms > 15000:
+                        where = "none"
+                    elif 6.0 <= first[0] <= 12.0:
+                        where = "middle"
+                    elif abs(first[0] - lane) <= 2.5:
+                        where = "push lane"
+                    else:
+                        where = "other lane"
+                    drill["where"].append(where)
+                    drill["by_kind"].setdefault(drill["kinds"][n], []).append(where)
+                    if first is not None and where != "none":
+                        drill["reaction"].append(max(0.0, (first[2] - push_ms) / 1000.0))
+        if drill is not None:
+            for i in np.flatnonzero(done):
+                drill["first"][i] = None
         for i in np.flatnonzero(done & active):
             w = int(env.winner[i])
             results.append(1.0 if w == 0 else (0.5 if w == 2 else 0.0))
@@ -149,11 +194,23 @@ def main():
     print(f"  score {results.mean():.3f} +- {1.96 * se:.3f} (95%)")
     if args.user_starts and args.follow_user > 0:
         print(f"  the user's scripted cards put down {env.env.script_made}, left out {env.env.script_dropped}")
+    if drill is not None:
+        print(f"  red's scripted push cards put down {env.env.script_made}, left out {env.env.script_dropped}")
+        share = lambda ws: ", ".join(f"{k} {ws.count(k) / max(1, len(ws)):.0%}"  # noqa: E731
+                                     for k in ("middle", "push lane", "other lane", "none"))
+        rt = np.array(drill["reaction"]) if drill["reaction"] else np.array([np.nan])
+        print(f"  blue's first troop after the push starts (within 15 s; middle: x 6-12, between the towers): "
+              f"{share(drill['where'])}; it comes {np.median(rt):.1f} s after red's first card (median)")
+        for kind, ws in sorted(drill["by_kind"].items()):
+            print(f"    {kind}: {share(ws)} ({len(ws)} games)")
     if play_elixir:
         pe, n = np.array(play_elixir), max(1, len(crowns))  # (all finished games, a few past --games)
         print(f"  blue's style: {len(pe) / n:.1f} cards per game, elixir when playing {pe.mean():.1f} "
               f"(from 8+: {np.mean(pe >= 8):.0%}), spells per game {spells / n:.1f}, "
               f"giants behind the king {giants_back / max(1, giants):.0%} of {giants / n:.1f} a game")
+        names = {ce.crsim.rl.FIRST_CARD_TOKEN + c.index: cid for cid, c in data.cards.items()}
+        print("  blue's troops put down between the lanes (x 6-12): " + ", ".join(
+            f"{names.get(k, k)} {v[1] / max(1, v[0]):.0%} of {v[0]}" for k, v in sorted(troop_x.items(), key=lambda kv: -kv[1][0])))
 
 
 if __name__ == "__main__":

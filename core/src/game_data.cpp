@@ -124,6 +124,12 @@ GameData GameData::load(const std::filesystem::path& dir) {
     d.rules.start_elixir = rules.at("start_elixir").get<double>();
     d.rules.max_elixir = rules.at("max_elixir").get<double>();
     d.rules.speed_scale = rules.value("speed_scale", 1.0);
+    if (rules.contains("movement")) {
+        const json& m = rules.at("movement");
+        d.rules.follow_width = m.value("follow_width", d.rules.follow_width);
+        d.rules.follow_gap = m.value("follow_gap", d.rules.follow_gap);
+        d.rules.pass_slide = m.value("pass_slide", d.rules.pass_slide);
+    }
 
     const json arena = read_json(dir / "arena.json");
     d.arena.width = arena.at("width").get<double>();

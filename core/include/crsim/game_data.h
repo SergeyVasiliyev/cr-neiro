@@ -115,6 +115,13 @@ struct RulesDef {
     // Everything moves this much faster in the real game than "speed / 60 tiles per second" from the
     // game files (walking and projectiles alike), measured from recordings (tools/measure_speeds.py).
     double speed_scale = 1.0;
+    // Same-side crowding (battle.cpp follow_step and resolve_collisions; rules.json "movement"): a troop walking
+    // into the back of a slower one of its side follows it when off its line by less than follow_width of the
+    // two radii and at most follow_gap tiles past touching; further off it slides along the other's side, the
+    // sideways part of the push pass_slide times larger (tools/crowd_check.py measures it on the recordings).
+    double follow_width = 0.4;
+    double follow_gap = 0.3;
+    double pass_slide = 2.0;
 };
 
 struct GameData {

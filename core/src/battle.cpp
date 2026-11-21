@@ -37,16 +37,14 @@ constexpr int kKnockMs = 300;
 // when the one in front has stopped to fight.
 constexpr double kFollowSlipBelow = 0.15;
 constexpr double kFollowSlip = 0.35;
-// Two of a side walking into each other off line: the sideways part of the push is this many times larger.
-constexpr double kPassSlide = 2.0;
+// Two of a side walking into each other off line: the sideways part of the push is rules.pass_slide times larger.
 // Following a slower troop of one's side (follow_step): it is in the way when it is ahead, at most this far
 // past touching, and off the line by less than this share of the two radii; only when both walk nearly the
 // same way (cos of the angle between them), and the one in front is within this much sideways per tile ahead.
 // In the recordings a mini pekka coming up right behind its giant (off its line by 0-0.5) gets past it 1 time
 // in 58 within 4 s, one ~0.8 off (2/3 of the radii) slides along its side and past (video36, 61-64 s), as does
 // one level with it.
-constexpr double kFollowGap = 0.3;
-constexpr double kFollowWidth = 0.4;
+// (The gap and the width: rules.follow_gap and rules.follow_width, data/rules.json "movement".)
 constexpr double kFollowAlign = 0.94;
 constexpr double kFollowCone = 1.0;
 
@@ -236,6 +234,13 @@ const Entity* Battle::find(EntityId id) const {
 bool Battle::can_deploy_at(Team team, Vec2 pos) const {
     const ArenaDef& a = data_.arena;
     if (pos.x < 0.5 || pos.x > a.width - 0.5 || pos.y < 0.5 || pos.y > a.height - 0.5) return false;
+    // The outer tile at each end of the rows next to the river (x 0-1 and 17-18, on both sides of it) is not part
+    // of the game's arena: a troop aimed there lands one tile in (live, 7 of 7 aimed at (17.5, 14.5) came down at
+    // ~16.6; the user, 2026-11-21: that tile does not exist, left and right).
+    if ((pos.x < 1.0 || pos.x > a.width - 1.0) &&
+        ((pos.y >= a.river_min_y - 1.0 && pos.y < a.river_min_y) || (pos.y > a.river_max_y && pos.y <= a.river_max_y + 1.0))) {
+        return false;
+    }
 
     // Work in the player's own frame: own side is y < river_min_y.
     const double y = team == Team::Blue ? pos.y : a.height - pos.y;
@@ -721,7 +726,7 @@ double Battle::follow_step(const Entity& e, Vec2 waypoint, double step, int dt) 
         const double side = std::abs(rel.x * dir.y - rel.y * dir.x);
         const double contact = e.radius + l.radius;
         // ... and ahead of it, not beside it (one level with it walks on past its side)
-        if (along <= 0.0 || along > contact + kFollowGap || side >= contact * kFollowWidth ||
+        if (along <= 0.0 || along > contact + data_.rules.follow_gap || side >= contact * data_.rules.follow_width ||
             side > along * kFollowCone) {
             continue;
         }
@@ -886,11 +891,11 @@ void Battle::resolve_collisions() {
                 n = Vec2{n.x + side * kFollowSlip, n.y};
                 n = n * (1.0 / n.length());
             } else if (p.team == q.team && !p.locked && !q.locked &&
-                       std::abs(d.x) >= (p.radius + q.radius) * kFollowWidth) {
+                       std::abs(d.x) >= (p.radius + q.radius) * data_.rules.follow_width) {
                 // Two of a side walking, one catching the other up off its line (not following it): in the game
                 // it slides along the other's side and gets past in about a second (a mini pekka 0.8 off its
                 // giant, video36 61-64 s); pushed apart straight along the line between them it would hardly.
-                n = Vec2{n.x * kPassSlide, n.y};
+                n = Vec2{n.x * data_.rules.pass_slide, n.y};
                 n = n * (1.0 / n.length());
             }
             const double push = overlap * kCollisionStiffness;
