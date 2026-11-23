@@ -6,8 +6,8 @@ stage (detector labels, sim checks) without a human playing both sides.
     .venv\\Scripts\\python.exe tools\\random_battles.py --check         one reading of each screen, no touches
 
 You start each friendly battle yourself (Classic Decks: one guest invites in the clan chat, the other accepts).
-A bot sees a battle by its timer and plays a lit card (enough elixir) at a random spot, at random moments, never
-sitting at 10. Card names are not known. A card's first play goes on the bot's own half: if a deploy clock shows up
+A bot sees a battle by its timer and picks a card of its hand at random; it plays it once lit (enough elixir) at a
+random spot, at random moments, never sitting at 10. Card names are not known. A card's first play goes on the bot's own half: if a deploy clock shows up
 there, it is a troop or a building (always our half), if not, a spell (then mostly aimed at the enemy's half).
 
 Each battle: raw/classic/cNNN.mp4 (LDPlayer 0's window, "blue") + cNNN_red.mp4 (LDPlayer 1's), every touch in
@@ -256,6 +256,9 @@ class RandomBot(threading.Thread):
 
     def _new_battle(self):
         self.target = self._draw_target()
+        self.wanted = None  # the hand slot picked for the next play, lit or not: it waits until it is affordable, so an
+                            # 8-elixir golem comes out as often as a skeleton (a lit card picked at random hardly ever
+                            # was one: no golem, lava hound or sparky in c001-c013)
         self.avoid = None  # a slot whose play did not leave the hand: maybe still selected (a tap would unselect it)
         self.cards = []    # [edge features, "troop" / "spell" / None (not played yet)] of this battle's deck
         self.prev = [None] * 4  # each slot's edge features at the look before
@@ -304,11 +307,15 @@ class RandomBot(threading.Thread):
         self.elixir = self.reader._elixir(frame, layout)
         slots = [self.slot_state(layout.hand_slot(frame, k), self.prev[k]) for k in range(4)]
         self.prev = [s["feat"] for s in slots]
-        choices = [k for k, s in enumerate(slots) if s["ready"] and s["lit"] and k != self.avoid]
-        if not choices or (self.elixir < self.target and self.elixir < 9.5):
+        ready = [k for k, s in enumerate(slots) if s["ready"] and k != self.avoid]
+        if self.wanted not in ready:
+            self.wanted = self.rng.choice(ready) if ready else None
+        lit = [k for k in ready if slots[k]["lit"]]
+        slot = self.wanted if self.wanted in lit else (self.rng.choice(lit) if lit and self.elixir >= 9.5 else None)
+        if slot is None or (self.elixir < self.target and self.elixir < 9.5):
             time.sleep(self.TICK)
             return
-        self._play(frame, layout, self.rng.choice(choices), slots, seconds, overtime)
+        self._play(frame, layout, slot, slots, seconds, overtime)
 
     def slot_state(self, crop, prev):
         """A hand slot: its edge features, whether a card sits there still (not empty, not sliding in) and is lit."""
@@ -358,6 +365,7 @@ class RandomBot(threading.Thread):
             [round(W - landed[0], 2), round(H - landed[1], 2)],
             "crop": crop})
         self.target = self._draw_target()
+        self.wanted = None
 
     def _frames_after(self, tapped):
         """Fresh frames from LOOK_FROM after the tap on, one per grab, until CLOCK_TO: (frame, seconds after the tap)."""

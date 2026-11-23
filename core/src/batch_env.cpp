@@ -19,6 +19,16 @@ BatchEnv::BatchEnv(const GameData& data, BatchEnvConfig cfg) : data_(data), cfg_
         for (const auto& id : m.red) data_.card(id);
     }
     full_tower_hp_ = data_.king_tower.hitpoints + 2.0 * data_.princess_tower.hitpoints;
+    // The decks an opponent may have: every deck of the matchups (the enemy deck features pick out the fitting ones).
+    for (const auto& m : cfg_.matchups) {
+        for (const Deck* deck : {&m.blue, &m.red}) {
+            std::vector<int> cards;
+            for (const auto& id : *deck) cards.push_back(data_.card(id).index);
+            std::sort(cards.begin(), cards.end());
+            if (std::find(deck_pool_.begin(), deck_pool_.end(), cards) == deck_pool_.end()) deck_pool_.push_back(cards);
+        }
+    }
+    cfg_.obs.deck_pool = &deck_pool_;
 
     const size_t n = static_cast<size_t>(cfg_.num_envs);
     const size_t p = n * 2;
@@ -30,6 +40,8 @@ BatchEnv::BatchEnv(const GameData& data, BatchEnvConfig cfg) : data_(data), cfg_
     enemy_history.resize(p * rl::kHistory);
     enemy_history_age.resize(p * rl::kHistory);
     action_mask.resize(p * rl::kNumActions);
+    enemy_deck.resize(p * rl::kEnemyDeck);
+    enemy_deck_info.resize(p * rl::kEnemyDeck * rl::kEnemyDeckFeatures);
     reward.resize(p);
     reward_parts.assign(p * kRewardParts, 0.0f);
     done.resize(n);
@@ -341,6 +353,8 @@ void BatchEnv::write_obs(int i) {
             enemy_history.data() + p * rl::kHistory,
             enemy_history_age.data() + p * rl::kHistory,
             action_mask.data() + p * rl::kNumActions,
+            enemy_deck.data() + p * rl::kEnemyDeck,
+            enemy_deck_info.data() + p * rl::kEnemyDeck * rl::kEnemyDeckFeatures,
         };
         rl::ObsConfig obs = cfg_.obs;
         obs.key_spots = slots_[i].key_spots[side] >= 0 ? slots_[i].key_spots[side] : cfg_.key_spots[side];

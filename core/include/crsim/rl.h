@@ -23,6 +23,20 @@ constexpr int kEntityFeatures = 18;
 constexpr int kGlobalFeatures = 25;
 constexpr int kHandTokens = kDeckSize;  // own full cycle: 4 cards in hand, then the queue in order
 constexpr int kHistory = kDeckSize;     // the opponent's last plays, newest first
+// The opponent's deck as far as it is known: the cards seen played, the cards of the deck pool's decks that fit
+// them (one deck left: all 8 known), and where each sits in their cycle. Features per card (EnemyDeckFeature).
+constexpr int kEnemyDeck = kDeckSize;
+constexpr int kEnemyDeckFeatures = 6;
+enum EnemyDeckFeature {
+    kDeckPlayed,     // seen played at least once
+    kDeckIn,         // chance it is in their deck: 1 once played, else the share of the fitting pool decks with it
+    kDeckInHand,     // chance it is in their hand now: their last 4 plays wait in the queue, the rest of the deck
+                     // shares the 4 hand slots
+    kDeckQueue,      // one of their last 4 plays: its place in the queue / 4 (0.25 = the next card back into the
+                     // hand, 1 = just played); else 0
+    kDeckKnown,      // 1 / the number of pool decks that fit the cards seen (1 = the deck is known); 0 = no pool
+    kDeckSincePlay,  // seconds since it was last played / 10 (0 = never)
+};
 
 // Token vocabulary for entities and cards: 0 = padding, 1/2 = towers, then CardDef::index + 3.
 constexpr int kPadToken = 0;
@@ -80,6 +94,9 @@ struct ObsConfig {
     std::mt19937_64* rng = nullptr;
     // Seen like the live bot sees it (LiveView), if set and enabled; it is updated by every observation.
     LiveView* live = nullptr;
+    // The decks the opponent may have (CardDef::index of their cards), e.g. the Classic Decks pool: the cards
+    // seen played pick out the ones that fit (the enemy deck features). Null or empty: only the cards seen.
+    const std::vector<std::vector<int>>* deck_pool = nullptr;
 };
 
 // Caller-owned buffers for one player's observation.
@@ -92,7 +109,13 @@ struct ObsView {
     int32_t* enemy_history;      // [kHistory] card tokens of revealed plays, 0 = none yet
     float* enemy_history_age;    // [kHistory] seconds since each was revealed / 10
     uint8_t* action_mask;   // [kNumActions], may be null
+    int32_t* enemy_deck = nullptr;       // [kEnemyDeck] card tokens of the opponent's deck as known, 0 = none
+    float* enemy_deck_info = nullptr;    // [kEnemyDeck][kEnemyDeckFeatures]; both may be null (not written)
 };
+
+// The opponent's deck as `team` knows it (the enemy deck block of the observation), written to `tokens` and `info`.
+// live: the observer's view (missed plays and late ones are not known to it), as in encode.
+void encode_enemy_deck(const Battle& battle, Team team, const ObsConfig& cfg, int32_t* tokens, float* info);
 
 // Throws std::runtime_error if the arena does not match the deploy grid.
 void check_arena(const GameData& data);

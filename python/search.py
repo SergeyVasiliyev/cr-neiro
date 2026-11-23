@@ -92,6 +92,8 @@ class SearchPlayer:
         self.net, self.device = net, device
         self.opp = opponent_net or net
         self.key_spots = int(ckpt.get("key_spots", 0))
+        from model import deck_pool_of
+        self.deck_pool = deck_pool_of(ckpt)  # (the enemy deck block's pool, as in training)
         self.ticks = int(ckpt.get("args", {}).get("decision_ticks", 6))
         self.k, self.r, self.h = candidates, rollouts, horizon_s
         self.temp, self.rtemp, self.think = temperature, rollout_temperature, think_below_wait
@@ -102,7 +104,7 @@ class SearchPlayer:
         self._runners = {}
 
     def _encode(self, battle, team):
-        return crsim.rl.encode(battle, team, key_spots=self.key_spots)
+        return crsim.rl.encode(battle, team, key_spots=self.key_spots, deck_pool=self.deck_pool)
 
     def _runner(self, net, size, row):
         key = (id(net), size)

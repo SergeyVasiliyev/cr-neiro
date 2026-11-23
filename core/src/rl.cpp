@@ -113,6 +113,100 @@ double live_enemy_elixir(LiveView& lv, const Battle& b, const PlayerState& them,
 
 }  // namespace
 
+void encode_enemy_deck(const Battle& b, Team team, const ObsConfig& cfg, int32_t* tokens, float* info) {
+    const PlayerState& them = b.player(opponent(team));
+    const LiveView* live = cfg.live && cfg.live->enabled() ? cfg.live : nullptr;
+    const int now = b.time_ms();
+    // The plays we have seen, in the order they were made.
+    std::vector<int> seen, seen_ms;
+    for (size_t i = 0; i < them.plays.size(); ++i) {
+        const CardPlay& p = them.plays[i];
+        if (p.reveal_ms < 0) continue;  // still a blueprint only they can see
+        if (live && !play_seen(*live, them, i, now)) continue;  // missed, or not made out yet
+        seen.push_back(p.card_index);
+        seen_ms.push_back(p.reveal_ms);
+    }
+    auto has = [](const std::vector<int>& v, int c) { return std::find(v.begin(), v.end(), c) != v.end(); };
+    std::vector<int> played;  // distinct cards seen, in the order first seen
+    for (int c : seen) {
+        if (!has(played, c)) played.push_back(c);
+    }
+    // The pool decks they may hold: those with the most of the cards seen (all of them, unless one was misread).
+    std::vector<const std::vector<int>*> fits;
+    if (cfg.deck_pool) {
+        int best = -1;
+        for (const auto& deck : *cfg.deck_pool) {
+            int n = 0;
+            for (int c : played) n += has(deck, c);
+            if (n > best) {
+                best = n;
+                fits.clear();
+            }
+            if (n == best) fits.push_back(&deck);
+        }
+    }
+    auto in_deck = [&](int c) {
+        if (has(played, c)) return 1.0;
+        if (fits.empty()) return 0.0;
+        int n = 0;
+        for (const auto* d : fits) n += has(*d, c);
+        return static_cast<double>(n) / static_cast<double>(fits.size());
+    };
+    // The cards to show: the ones seen, then the fitting decks' others, likeliest first.
+    std::vector<int> cards = played;
+    std::vector<std::pair<double, int>> others;
+    for (const auto* d : fits) {
+        for (int c : *d) {
+            if (!has(cards, c) && std::none_of(others.begin(), others.end(), [c](const auto& o) { return o.second == c; })) {
+                others.push_back({in_deck(c), c});
+            }
+        }
+    }
+    std::sort(others.begin(), others.end(), [](const auto& x, const auto& y) {
+        return x.first != y.first ? x.first > y.first : x.second < y.second;
+    });
+    for (const auto& o : others) cards.push_back(o.second);
+    // The cycle: a played card goes to the back of the queue and the front one comes into the hand, so their last
+    // 4 plays are the queue, oldest at the front; before 4 plays its front holds cards never seen.
+    const int recent_from = std::max(0, static_cast<int>(seen.size()) - kHandSize);
+    std::vector<int> recent(seen.begin() + recent_from, seen.end());
+    std::vector<int> recent_distinct;
+    for (int c : recent) {
+        if (!has(recent_distinct, c)) recent_distinct.push_back(c);
+    }
+    const double hand_share = static_cast<double>(kHandSize) / (kDeckSize - static_cast<int>(recent_distinct.size()));
+    const float known = fits.empty() ? 0.0f : 1.0f / static_cast<float>(fits.size());
+    for (int s = 0; s < kEnemyDeck; ++s) {
+        float* f = info + s * kEnemyDeckFeatures;
+        std::fill(f, f + kEnemyDeckFeatures, 0.0f);
+        if (s >= static_cast<int>(cards.size())) {
+            tokens[s] = kPadToken;
+            continue;
+        }
+        const int c = cards[s];
+        tokens[s] = kFirstCardToken + c;
+        const double p = in_deck(c);
+        f[kDeckPlayed] = has(played, c) ? 1.0f : 0.0f;
+        f[kDeckIn] = static_cast<float>(p);
+        int place = -1;  // its latest place among the recent plays
+        for (int j = 0; j < static_cast<int>(recent.size()); ++j) {
+            if (recent[j] == c) place = j;
+        }
+        if (place >= 0) {
+            f[kDeckQueue] = static_cast<float>(kHandSize - static_cast<int>(recent.size()) + place + 1) / kHandSize;
+        } else {
+            f[kDeckInHand] = static_cast<float>(p * std::min(1.0, hand_share));
+        }
+        f[kDeckKnown] = known;
+        for (int j = static_cast<int>(seen.size()) - 1; j >= 0; --j) {
+            if (seen[j] == c) {
+                f[kDeckSincePlay] = static_cast<float>(now - seen_ms[j]) / 10000.0f;
+                break;
+            }
+        }
+    }
+}
+
 void check_arena(const GameData& data) {
     if (data.arena.width != kGridW || data.arena.height != kGridH) {
         throw std::runtime_error("rl: arena must be 18x32 tiles to match the deploy grid");
@@ -196,6 +290,9 @@ void encode(const Battle& b, Team team, const ObsConfig& cfg, const ObsView& out
         out.enemy_history[filled] = kPadToken;
         out.enemy_history_age[filled] = 0.0f;
     }
+
+    // --- the opponent's deck as far as we know it: the cards seen, the pool decks that fit, their cycle ---
+    if (out.enemy_deck && out.enemy_deck_info) encode_enemy_deck(b, team, cfg, out.enemy_deck, out.enemy_deck_info);
 
     // --- entities: own towers, enemy towers, then troops ordered by how deep they are into our half ---
     struct Item {

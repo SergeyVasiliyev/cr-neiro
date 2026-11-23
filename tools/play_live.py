@@ -47,12 +47,13 @@ class HeuristicBrain:
 class PolicyBrain:
     def __init__(self, path):
         import torch
-        from model import PolicyPlayer, load_policy
+        from model import PolicyPlayer, deck_pool_of, load_policy
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         net, ckpt = load_policy(path, device)
         self.player = PolicyPlayer(net, device, greedy=True)
         self.key_spots = int(ckpt.get("key_spots", 0))  # the action space it was trained with
+        self.deck_pool = deck_pool_of(ckpt)  # the decks its opponents had: the enemy deck block picks the fitting one
         # ... and the rhythm: it decided every decision_ticks x 50 ms in training
         self.decide_every = ckpt.get("args", {}).get("decision_ticks", 6) * 0.05
         self.finisher = False  # --finisher: a hard rule; the policies are to learn it (endgame starts in train_v7)
@@ -76,7 +77,8 @@ class PolicyBrain:
         if self.search is not None:
             action = self.search.decide(battle, BLUE)
         else:
-            action = int(self.player(crsim.rl.encode(battle, BLUE, key_spots=self.key_spots)))
+            action = int(self.player(crsim.rl.encode(battle, BLUE, key_spots=self.key_spots,
+                                                     deck_pool=self.deck_pool)))
         if action == 0:
             return None
         slot, cell = divmod(action - 1, crsim.rl.CELLS)

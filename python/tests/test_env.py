@@ -84,12 +84,74 @@ def test_cycle_and_enemy_history(data):
     assert 0 <= env.obs(0)["enemy_history_age"][0, 0] < 0.1  # revealed under 1 s ago, in units of 10 s
 
 
+def _classic_pool():
+    import json
+    return json.load(open(os.path.join(ce.DATA_DIR, "classic_decks.json"), encoding="utf-8"))["decks"]
+
+
+def _red_plays(env, data, n):
+    """Red plays n cards one by one (its first playable hand card on its own half), each seen by Blue; the cards."""
+    played = []
+    for _ in range(n):
+        for _ in range(40):  # (elixir and the next card back in hand)
+            mask = env.obs(1)["action_mask"][0]
+            if mask[1:].any():
+                break
+            env.step(np.array([[0, 0]]))
+        slot = int(np.flatnonzero(mask[1:].reshape(4, -1).any(1))[0])
+        played.append(env.battle(0).player(crsim.Team.RED).hand[slot])
+        cell = int(np.flatnonzero(mask[1 + slot * ce.CELLS:1 + (slot + 1) * ce.CELLS])[0])
+        env.step(np.array([[0, 1 + slot * ce.CELLS + cell]]))
+        for _ in range(3):  # its blueprint second, then it shows
+            env.step(np.array([[0, 0]]))
+    return played
+
+
+def test_enemy_deck_from_the_pool_and_the_cycle(data):
+    pool = _classic_pool()
+    golem, log_bait = pool["golem"], pool["log_bait"]
+    # the pool is every deck of the matchups: here two
+    env = ce.VecEnv(data, [(log_bait, golem), (golem, log_bait)], num_envs=1, bots=("noop", "noop"), seed=1)
+    first = crsim.rl.FIRST_CARD_TOKEN
+    red_deck = list(env.battle(0).player(crsim.Team.RED).hand) + list(env.battle(0).player(crsim.Team.RED).queue)
+    assert sorted(red_deck) in (sorted(golem), sorted(log_bait))
+    tokens, info = env.obs(0)["enemy_deck"][0], env.obs(0)["enemy_deck_info"][0]
+    played_f, in_f, hand_f, queue_f, known_f, since_f = range(crsim.rl.ENEMY_DECK_FEATURES)
+    # Nothing seen yet: both pool decks fit, each card is in red's deck at 1/2 (or 1 if in both).
+    assert np.allclose(info[tokens > 0, known_f], 0.5)
+    assert (info[:, played_f] == 0).all()
+    played = _red_plays(env, data, 1)
+    tokens, info = env.obs(0)["enemy_deck"][0], env.obs(0)["enemy_deck_info"][0]
+    # One card seen: it is first, played, in the queue's back; only red's deck holds it, so all 8 are known.
+    assert tokens[0] == first + data.card(played[0]).index
+    assert info[0, played_f] == 1 and info[0, queue_f] == 1.0 and info[0, hand_f] == 0
+    assert sorted(tokens - first) == sorted(data.card(c).index for c in red_deck)
+    assert np.allclose(info[:, in_f], 1.0) and np.allclose(info[:, known_f], 1.0)
+    assert np.allclose(info[1:, hand_f], 4 / 7)  # the 7 others share the 4 hand slots
+    played += _red_plays(env, data, 3)
+    tokens, info = env.obs(0)["enemy_deck"][0], env.obs(0)["enemy_deck_info"][0]
+    # Four plays: they are the queue (the oldest comes back next), the other four are red's hand.
+    by_card = {int(t) - first: row for t, row in zip(tokens, info)}
+    for k, c in enumerate(played):
+        assert by_card[data.card(c).index][queue_f] == pytest.approx((k + 1) / 4)
+        assert by_card[data.card(c).index][hand_f] == 0
+    hand = env.battle(0).player(crsim.Team.RED).hand
+    for c in hand:
+        if c:
+            assert by_card[data.card(c).index][hand_f] == pytest.approx(1.0)
+    # The same block straight from a battle, and without a pool: only the cards seen.
+    t2, i2 = crsim.rl.enemy_deck(env.battle(0), crsim.Team.BLUE, deck_pool=[golem, log_bait])
+    assert (np.sort(t2) == np.sort(tokens)).all()
+    t3, i3 = crsim.rl.enemy_deck(env.battle(0), crsim.Team.BLUE)
+    assert (t3 > 0).sum() == len(set(played)) and np.allclose(i3[t3 > 0, known_f], 0.0)
+
+
 def test_blueprints_are_hidden_from_the_opponent(data):
     env = ce.VecEnv(data, [(["knight"] * 8, ["knight"] * 8)], num_envs=1, bots=("noop", "noop"))
     elixir_seen_by_red = env.obs(1)["global"][0, 5]
     action = 1 + 10 * ce.GRID_W + 9
     env.step(np.array([[action, 0]]))  # Blue plays a knight: 0.5 s later it is still a blueprint
-    pending_col = crsim.rl.ENTITY_FEATURES - 1
+    pending_col = 13  # kPending (rl.cpp EntityFeature; the target features came after it)
     blue_sees = env.obs(0)["entities"][0][env.obs(0)["entity_mask"][0] == 1]
     red_sees = env.obs(1)["entities"][0][env.obs(1)["entity_mask"][0] == 1]
     assert (blue_sees[:, pending_col] == 1).sum() == 1

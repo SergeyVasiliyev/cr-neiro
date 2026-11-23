@@ -1,0 +1,1 @@
+".venv\Scripts\python.exe" tools\train_detector.py --data raw\detector\classic1\data.yaml --model raw\detector\runs\classic0\weights\best.pt --epochs 30 --imgsz 960 --batch 8 --name classic1 --patience 10 %*

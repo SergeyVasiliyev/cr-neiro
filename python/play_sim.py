@@ -101,18 +101,19 @@ class Bot:
 
     def __init__(self, path, temperature=0.5):
         import torch
-        from model import PolicyPlayer, load_policy
+        from model import PolicyPlayer, deck_pool_of, load_policy
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         net, ckpt = load_policy(path, device)
         self.player = PolicyPlayer(net, device, temperature=temperature)
         self.key_spots = int(ckpt.get("key_spots", 0))
+        self.deck_pool = deck_pool_of(ckpt)
         self.decision_ticks = int(ckpt.get("args", {}).get("decision_ticks") or 4)
 
     def decide(self, battle, team):
         """(hand slot, position) or None to wait. The same move as crsim.rl.apply_action, made here so it can be
         recorded."""
-        action = self.player(crsim.rl.encode(battle, team, key_spots=self.key_spots))
+        action = self.player(crsim.rl.encode(battle, team, key_spots=self.key_spots, deck_pool=self.deck_pool))
         if action <= 0:
             return None
         slot, cell = divmod(action - 1, crsim.rl.CELLS)

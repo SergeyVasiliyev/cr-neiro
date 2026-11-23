@@ -15,6 +15,10 @@ Observations are dicts of numpy arrays, always from the acting player's own pers
   enemy_history int32   [HISTORY]                        opponent's last plays, newest first (0 = none yet)
   enemy_history_age float32 [HISTORY]                    seconds since each of those plays / 10
   action_mask   uint8   [NUM_ACTIONS]                    1 = legal action
+  enemy_deck    int32   [ENEMY_DECK]                     the opponent's deck as known: cards seen, then the cards of
+                                                         the matchups' decks that fit them (one left: all 8 known)
+  enemy_deck_info float32 [ENEMY_DECK, ENEMY_DECK_FEATURES]  per card: played, in deck, in hand now, place in the
+                                                         queue, 1 / decks that fit, seconds since played / 10
 Actions: 0 = wait, 1 + slot * 576 + row * 18 + col = play hand card `slot` on tile (col, row).
 """
 import os
@@ -32,7 +36,7 @@ import crsim  # noqa: E402
 
 DATA_DIR = os.path.join(ROOT, "data")
 OBS_KEYS = ("global", "entities", "entity_token", "entity_mask", "hand", "enemy_history", "enemy_history_age",
-            "action_mask")
+            "action_mask", "enemy_deck", "enemy_deck_info")
 # The starter deck every new player gets.
 DEFAULT_DECK = ["knight", "archers", "minions", "arrows", "fireball", "giant", "mini_pekka", "musketeer"]
 BOT_KINDS = ("noop", "random", "heuristic", "pusher")
@@ -101,6 +105,8 @@ def observation_space(data):
         "enemy_history": spaces.Box(0, vocab - 1, (crsim.rl.HISTORY,), np.int32),
         "enemy_history_age": spaces.Box(0.0, 100.0, (crsim.rl.HISTORY,), np.float32),
         "action_mask": spaces.Box(0, 1, (NUM_ACTIONS,), np.uint8),
+        "enemy_deck": spaces.Box(0, vocab - 1, (crsim.rl.ENEMY_DECK,), np.int32),
+        "enemy_deck_info": spaces.Box(0.0, 100.0, (crsim.rl.ENEMY_DECK, crsim.rl.ENEMY_DECK_FEATURES), np.float32),
     })
 
 

@@ -26,8 +26,20 @@ BotKind bot_from(const py::handle& h) {
     return h.cast<BotKind>();
 }
 
+// Card indices of each deck of a pool given as lists of card ids (None: no pool).
+std::vector<std::vector<int>> deck_pool_indices(const GameData& data, const py::object& pool) {
+    std::vector<std::vector<int>> out;
+    if (pool.is_none()) return out;
+    for (const auto& deck : pool) {
+        std::vector<int> cards;
+        for (const auto& id : deck) cards.push_back(data.card(id.cast<std::string>()).index);
+        out.push_back(std::move(cards));
+    }
+    return out;
+}
+
 // Encodes one player's observation of a single Battle into fresh numpy arrays.
-py::dict encode_battle(const Battle& b, Team team, bool observe_enemy_elixir, int key_spots) {
+py::dict encode_battle(const Battle& b, Team team, bool observe_enemy_elixir, int key_spots, const py::object& pool) {
     py::array_t<float> global(rl::kGlobalFeatures);
     py::array_t<float> entities({rl::kMaxEntities, rl::kEntityFeatures});
     py::array_t<int32_t> token(rl::kMaxEntities);
@@ -36,12 +48,17 @@ py::dict encode_battle(const Battle& b, Team team, bool observe_enemy_elixir, in
     py::array_t<int32_t> history(rl::kHistory);
     py::array_t<float> history_age(rl::kHistory);
     py::array_t<uint8_t> amask(rl::kNumActions);
+    py::array_t<int32_t> enemy_deck(rl::kEnemyDeck);
+    py::array_t<float> enemy_deck_info({rl::kEnemyDeck, rl::kEnemyDeckFeatures});
+    const std::vector<std::vector<int>> decks = deck_pool_indices(b.data(), pool);
     rl::ObsConfig cfg;
     cfg.observe_enemy_elixir = observe_enemy_elixir;
     cfg.key_spots = key_spots;
+    cfg.deck_pool = decks.empty() ? nullptr : &decks;
     rl::encode(b, team, cfg,
                {global.mutable_data(), entities.mutable_data(), token.mutable_data(), mask.mutable_data(),
-                hand.mutable_data(), history.mutable_data(), history_age.mutable_data(), amask.mutable_data()});
+                hand.mutable_data(), history.mutable_data(), history_age.mutable_data(), amask.mutable_data(),
+                enemy_deck.mutable_data(), enemy_deck_info.mutable_data()});
     py::dict d;
     d["global"] = global;
     d["entities"] = entities;
@@ -51,6 +68,8 @@ py::dict encode_battle(const Battle& b, Team team, bool observe_enemy_elixir, in
     d["enemy_history"] = history;
     d["enemy_history_age"] = history_age;
     d["action_mask"] = amask;
+    d["enemy_deck"] = enemy_deck;
+    d["enemy_deck_info"] = enemy_deck_info;
     return d;
 }
 
@@ -325,10 +344,27 @@ PYBIND11_MODULE(crsim, m) {
     rl_mod.attr("HAND_TOKENS") = rl::kHandTokens;
     rl_mod.attr("HAND_SIZE") = kHandSize;
     rl_mod.attr("HISTORY") = rl::kHistory;
+    rl_mod.attr("ENEMY_DECK") = rl::kEnemyDeck;
+    rl_mod.attr("ENEMY_DECK_FEATURES") = rl::kEnemyDeckFeatures;
     rl_mod.attr("FIRST_CARD_TOKEN") = rl::kFirstCardToken;
     rl_mod.def("vocab_size", &rl::vocab_size, py::arg("data"));
     rl_mod.def("encode", &encode_battle, py::arg("battle"), py::arg("team"), py::arg("observe_enemy_elixir") = true,
-               py::arg("key_spots") = 0);
+               py::arg("key_spots") = 0, py::arg("deck_pool") = py::none(),
+               "One player's observation. deck_pool: the decks the opponent may have (lists of 8 card ids, e.g. "
+               "the Classic Decks): the enemy deck block then shows the fitting deck's cards");
+    rl_mod.def(
+        "enemy_deck",
+        [](const Battle& b, Team team, const py::object& pool) {
+            const std::vector<std::vector<int>> decks = deck_pool_indices(b.data(), pool);
+            rl::ObsConfig cfg;
+            cfg.deck_pool = decks.empty() ? nullptr : &decks;
+            py::array_t<int32_t> tokens(rl::kEnemyDeck);
+            py::array_t<float> info({rl::kEnemyDeck, rl::kEnemyDeckFeatures});
+            rl::encode_enemy_deck(b, team, cfg, tokens.mutable_data(), info.mutable_data());
+            return py::make_tuple(tokens, info);
+        },
+        py::arg("battle"), py::arg("team"), py::arg("deck_pool") = py::none(),
+        "(tokens, info): the opponent's deck as `team` knows it, the enemy deck block of the observation alone");
     rl_mod.def(
         "key_spot_cells",
         [](const Battle& b, Team team, bool tactical) {
@@ -476,6 +512,8 @@ PYBIND11_MODULE(crsim, m) {
         CRSIM_VIEW(enemy_history, n, 2, rl::kHistory)
         CRSIM_VIEW(enemy_history_age, n, 2, rl::kHistory)
         CRSIM_VIEW(action_mask, n, 2, rl::kNumActions)
+        CRSIM_VIEW(enemy_deck, n, 2, rl::kEnemyDeck)
+        CRSIM_VIEW(enemy_deck_info, n, 2, rl::kEnemyDeck, rl::kEnemyDeckFeatures)
         CRSIM_VIEW(reward, n, 2)
         CRSIM_VIEW(reward_parts, n, 2, kRewardParts)
         CRSIM_VIEW(taken, n, 2)

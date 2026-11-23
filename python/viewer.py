@@ -60,6 +60,8 @@ class ModelAgent:
             from search import SearchPlayer
             self.search = SearchPlayer(net, ckpt, device, temperature=0.5)
         self.key_spots = int(ckpt.get("key_spots", 0))
+        from model import deck_pool_of
+        self.deck_pool = deck_pool_of(ckpt)
         self.decision_ticks = ckpt.get("args", {}).get("decision_ticks")
         self.name = ("модель+поиск " if search else "модель ") + os.path.basename(os.path.dirname(os.path.abspath(path)))
 
@@ -68,7 +70,7 @@ class ModelAgent:
         if self.search is not None:
             action = self.search.decide(battle, team)
         else:
-            action = self.player(crsim.rl.encode(battle, team, key_spots=self.key_spots))
+            action = self.player(crsim.rl.encode(battle, team, key_spots=self.key_spots, deck_pool=self.deck_pool))
         return lambda: crsim.rl.apply_action(battle, team, action)
 
 

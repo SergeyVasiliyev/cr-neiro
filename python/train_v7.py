@@ -50,6 +50,10 @@ def parse_args():
                    help="with --resume: where in the schedule to go on from instead of the checkpoint's own (a run "
                         "made longer: back from inside the anneal, to train at the full rate again before it)")
     p.add_argument("--init", default=None, help="start from these weights (a distilled net), schedule from zero")
+    p.add_argument("--enemy-deck", choices=("on", "off"), default=None,
+                   help="the opponent's deck as known (cards seen, the deck pool's fitting deck, their cycle) as an "
+                        "input: a fresh net has it unless off; on gives it to a --init/--resume net saved without it "
+                        "(starting at zero weight)")
     p.add_argument("--distill", default=None,
                    help="teacher checkpoint: instead of PPO, the teacher plays and the net learns to choose like it "
                         "(KL to its move probabilities); the critics learn the teacher's games")
@@ -344,20 +348,23 @@ def main():
 
     state = {}
     if args.resume:
-        net, ckpt = load_policy(args.resume, device)
+        net, ckpt = load_policy(args.resume, device, enemy_deck=args.enemy_deck == "on")
         state = ckpt.get("v7", {})
         global_step = int(ckpt.get("global_step", 0))
     elif args.init:
-        net, _ = load_policy(args.init, device)
+        net, _ = load_policy(args.init, device, enemy_deck=args.enemy_deck == "on")
         ckpt, global_step = None, 0
     else:
         d, layers, heads, grid, trunk = (int(x) for x in args.size.split(","))
         net = PolicyNet(ce.crsim.rl.vocab_size(data), d_model=d, n_layers=layers, n_heads=heads, grid_channels=grid,
-                        trunk=trunk, n_values=len(PARTS)).to(device)
+                        trunk=trunk, n_values=len(PARTS), enemy_deck=args.enemy_deck != "off").to(device)
         ckpt, global_step = None, 0
     optimizer = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5)
     if ckpt and ckpt.get("optimizer"):
-        optimizer.load_state_dict(ckpt["optimizer"])
+        try:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        except ValueError:  # (the net got new parts, --enemy-deck on: its optimizer starts afresh)
+            print("optimizer state not loaded: the net has new parts")
     lr = state.get("lr", args.lr)
     log_alpha = {"place": state.get("log_alpha_place", math.log(0.01)), "time": state.get("log_alpha_time", math.log(0.01))}
     progress0 = state.get("progress", 0.0) if args.progress is None else args.progress

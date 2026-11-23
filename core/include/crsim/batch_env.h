@@ -161,6 +161,8 @@ public:
     std::vector<int32_t> enemy_history;      // [.][.][rl::kHistory]
     std::vector<float> enemy_history_age;    // [.][.][rl::kHistory]
     std::vector<uint8_t> action_mask;   // [.][.][rl::kNumActions]
+    std::vector<int32_t> enemy_deck;    // [.][.][rl::kEnemyDeck]: the opponent's deck as known (the matchups' decks
+    std::vector<float> enemy_deck_info; // [.][.][rl::kEnemyDeck][rl::kEnemyDeckFeatures]   are the deck pool)
 
     // Step results.
     std::vector<float> reward;    // [num_envs][2]
@@ -223,6 +225,7 @@ private:
 
     GameData data_;
     BatchEnvConfig cfg_;
+    std::vector<std::vector<int>> deck_pool_;  // every deck of the matchups (card indices): cfg_.obs.deck_pool
     std::vector<Slot> slots_;
     // Is this side of the slot playing its start's script right now (its agent only waits)?
     bool scripted(const Slot& s, int side) const;
